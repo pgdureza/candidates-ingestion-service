@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: candidate-ingestion
+  namespace: default
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: candidate-ingestion
+  namespace: default
+data:
+  gcp-project: "test-project"
+  pubsub-topic: "candidate-applications"
+  pubsub-emulator-host: "pubsub-emulator:8085"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: candidate-ingestion
+  namespace: default
+type: Opaque
+stringData:
+  database-url: "postgres://user:password@postgres:5432/candidates?sslmode=disable"

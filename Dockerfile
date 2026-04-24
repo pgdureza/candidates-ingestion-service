@@ -12,17 +12,20 @@ RUN go mod download
 COPY . .
 
 # Build
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o server ./cmd/server
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o api ./cmd/api && \
+    CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o worker ./cmd/worker
 
 # Runtime stage
-FROM alpine:latest
+FROM alpine:latest as runtime
 
 RUN apk --no-cache add ca-certificates
 
 WORKDIR /root/
 
-COPY --from=builder /app/server .
+COPY --from=builder /app/api .
+COPY --from=builder /app/worker .
 
 EXPOSE 8080
 
-CMD ["./server"]
+# Default to API; override with: docker run [...] ./worker
+CMD ["./api"]

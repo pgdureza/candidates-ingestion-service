@@ -33,11 +33,12 @@ services:
       timeout: 5s
       retries: 5
 
-  app:
+  api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: candidates-app
+      target: runtime
+    container_name: candidates-api
     ports:
       - "8080:8080"
     environment:
@@ -46,6 +47,25 @@ services:
       PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
       PUBSUB_TOPIC: candidate-applications
       API_PORT: "8080"
+    command: ./api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pubsub-emulator:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: candidates-worker
+    environment:
+      DATABASE_URL: postgres://candidate:password@postgres:5432/candidates?sslmode=disable
+      GCP_PROJECT: test-project
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_TOPIC: candidate-applications
+    command: ./worker
     depends_on:
       postgres:
         condition: service_healthy
