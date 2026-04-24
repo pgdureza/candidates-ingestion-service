@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: candidates-postgres
+    environment:
+      POSTGRES_USER: candidate
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: candidates
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U candidate"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pubsub-emulator:
+    image: google/cloud-sdk:emulators
+    container_name: candidates-pubsub
+    ports:
+      - "8085:8085"
+    environment:
+      PUBSUB_PROJECT_ID: test-project
+    command: gcloud beta emulators pubsub start --host-port=0.0.0.0:8085
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: candidates-app
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://candidate:password@postgres:5432/candidates?sslmode=disable
+      GCP_PROJECT: test-project
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+      PUBSUB_TOPIC: candidate-applications
+      API_PORT: "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pubsub-emulator:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

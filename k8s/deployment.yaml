@@ -1,0 +1,195 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: candidate-ingestion-service
+  namespace: default
+  labels:
+    app: candidate-ingestion
+    version: v1
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: candidate-ingestion
+  template:
+    metadata:
+      labels:
+        app: candidate-ingestion
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: candidate-ingestion
+
+      # Init container: run migrations
+      initContainers:
+      - name: migrate
+        image: candidate-ingestion:latest
+        imagePullPolicy: Always
+        command: ["sh", "-c"]
+        args:
+        - |
+          psql $DATABASE_URL < /migrations/001_init.sql || true
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: candidate-ingestion
+              key: database-url
+        volumeMounts:
+        - name: migrations
+          mountPath: /migrations
+
+      # Main app containers
+      containers:
+      - name: app
+        image: candidate-ingestion:latest
+        imagePullPolicy: Always
+
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+
+        env:
+        - name: API_PORT
+          value: "8080"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: candidate-ingestion
+              key: database-url
+        - name: GCP_PROJECT
+          valueFrom:
+            configMapKeyRef:
+              name: candidate-ingestion
+              key: gcp-project
+        - name: PUBSUB_TOPIC
+          valueFrom:
+            configMapKeyRef:
+              name: candidate-ingestion
+              key: pubsub-topic
+        - name: PUBSUB_EMULATOR_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: candidate-ingestion
+              key: pubsub-emulator-host
+              optional: true
+
+        # Resource management
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        # Liveness probe
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Readiness probe
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+
+      volumes:
+      - name: migrations
+        configMap:
+          name: migrations
+          defaultMode: 0755
+      - name: tmp
+        emptyDir: {}
+
+      # Pod disruption budget
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - candidate-ingestion
+              topologyKey: kubernetes.io/hostname
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: candidate-ingestion-service
+  namespace: default
+  labels:
+    app: candidate-ingestion
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: candidate-ingestion
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: candidate-ingestion
+  namespace: default
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: candidate-ingestion
+  namespace: default
+data:
+  gcp-project: "test-project"
+  pubsub-topic: "candidate-applications"
+  pubsub-emulator-host: "pubsub-emulator:8085"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: candidate-ingestion
+  namespace: default
+type: Opaque
+stringData:
+  database-url: "postgres://user:password@postgres:5432/candidates?sslmode=disable"

@@ -1,0 +1,28 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# Build
+bin/
+dist/
+
+# Dependencies
+vendor/
+
+# Test coverage
+*.coverprofile
+coverage.html
+coverage.out
+
+# Environment
+.env
+.env.local
+*.log
+
+# Docker
+.dockerignore

@@ -1,0 +1,111 @@
+.PHONY: up down server test lint stress-test trigger-failure k8s-deploy k8s-delete help
+
+# Variables
+DOCKER_IMAGE ?= candidate-ingestion:latest
+DOCKER_COMPOSE_FILE ?= docker-compose.yml
+KUBE_NAMESPACE ?= default
+STRESS_TEST_DURATION ?= 60
+STRESS_TEST_CONCURRENCY ?= 50
+
+help:
+	@echo "Available commands:"
+	@echo "  make up                 Start full stack (PostgreSQL, PubSub, App)"
+	@echo "  make down               Stop all services"
+	@echo "  make server             Run server locally (go run ./cmd/server)"
+	@echo "  make test               Run unit tests"
+	@echo "  make lint               Run linter"
+	@echo "  make stress-test        Simulate traffic spike"
+	@echo "  make trigger-failure    Simulate downstream failure"
+	@echo "  make k8s-deploy         Deploy to Kubernetes"
+	@echo "  make k8s-delete         Delete Kubernetes resources"
+	@echo "  make build              Build Docker image"
+
+# Docker Compose Commands
+up:
+	@echo "Starting full stack..."
+	docker-compose -f $(DOCKER_COMPOSE_FILE) up -d
+	@echo "Waiting for services to be healthy..."
+	@sleep 5
+	docker-compose -f $(DOCKER_COMPOSE_FILE) exec -T postgres psql -U candidate -d candidates -c "SELECT 1"
+	@echo "Stack ready: API on http://localhost:8080, PostgreSQL on localhost:5432, PubSub on 0.0.0.0:8085"
+
+down:
+	docker-compose -f $(DOCKER_COMPOSE_FILE) down -v
+
+# Build Docker image
+build:
+	docker build -t $(DOCKER_IMAGE) .
+
+# Testing
+test:
+	go test -v -race -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report: coverage.html"
+
+lint:
+	@which golangci-lint > /dev/null || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
+	golangci-lint run ./...
+
+# Stress Testing
+stress-test:
+	@echo "Running stress test against http://localhost:8080"
+	@echo "Duration: $(STRESS_TEST_DURATION)s, Concurrency: $(STRESS_TEST_CONCURRENCY)"
+	@bash -c '\
+		for i in {1..$(STRESS_TEST_CONCURRENCY)}; do \
+			(for j in {1..100}; do \
+				curl -s -X POST http://localhost:8080/webhooks/linkedin \
+					-H "Content-Type: application/json" \
+					-H "Idempotency-Key: stress-test-$$i-$$j" \
+					-d "{ \
+						\"id\": \"linkedin-stress-$$i-$$j\", \
+						\"firstName\": \"Test\", \
+						\"lastName\": \"User\", \
+						\"email\": \"test$$i$$j@example.com\", \
+						\"phone\": \"555-0000\", \
+						\"jobTitle\": \"Engineer\" \
+					}" > /dev/null; \
+			done) & \
+		done; \
+		wait \
+	'
+	@echo "Stress test complete. Check HPA status with: kubectl get hpa -n $(KUBE_NAMESPACE)"
+
+# Failure Injection
+trigger-failure:
+	@echo "Simulating circuit breaker failure..."
+	@bash -c '\
+		for i in {1..100}; do \
+			curl -s -X POST http://localhost:8080/webhooks/invalid-source \
+				-H "Content-Type: application/json" \
+				-d "{\"id\": \"fail-$$i\"}" > /dev/null; \
+		done \
+	'
+	@echo "Sent 100 failing requests. Watch circuit breaker state."
+
+# Kubernetes
+k8s-deploy:
+	@echo "Deploying to Kubernetes..."
+	kubectl create namespace $(KUBE_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -f k8s/deployment.yaml -n $(KUBE_NAMESPACE)
+	kubectl apply -f k8s/hpa.yaml -n $(KUBE_NAMESPACE)
+	@echo "Deployment complete. Check status with:"
+	@echo "  kubectl get pods -n $(KUBE_NAMESPACE)"
+	@echo "  kubectl get hpa -n $(KUBE_NAMESPACE)"
+
+k8s-delete:
+	@echo "Deleting Kubernetes resources..."
+	kubectl delete -f k8s/ -n $(KUBE_NAMESPACE) --ignore-not-found
+
+k8s-logs:
+	kubectl logs -f deployment/candidate-ingestion-service -n $(KUBE_NAMESPACE)
+
+k8s-describe:
+	kubectl describe pod -n $(KUBE_NAMESPACE) -l app=candidate-ingestion
+
+# Local development
+server:
+	go run ./cmd/server
+
+dev-setup:
+	go mod download
+	go mod tidy
