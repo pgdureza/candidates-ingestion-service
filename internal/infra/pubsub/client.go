@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"cloud.google.com/go/pubsub"
 )
@@ -58,13 +59,35 @@ func (c *Client) SubscribeAndProcess(
 	topic string,
 	callback func(context.Context, *pubsub.Message) error, // cloud.google.com/go/pubsub.Message
 ) error {
-	sub, err := c.client.CreateSubscription(ctx, topic+"-sub", pubsub.SubscriptionConfig{
-		Topic:       c.client.Topic(topic),
-		AckDeadline: 60,
-	})
+	// Ensure topic exists
+	t := c.client.Topic(topic)
+	exists, err := t.Exists(ctx)
 	if err != nil {
-		// Subscription might already exist
-		sub = c.client.Subscription(topic + "-sub")
+		return fmt.Errorf("topic check failed: %w", err)
+	}
+	if !exists {
+		var err error
+		t, err = c.client.CreateTopic(ctx, topic)
+		if err != nil {
+			return fmt.Errorf("failed to create topic: %w", err)
+		}
+	}
+
+	// Ensure subscription exists
+	subName := topic + "-sub"
+	sub := c.client.Subscription(subName)
+	exists, err = sub.Exists(ctx)
+	if err != nil {
+		return fmt.Errorf("subscription check failed: %w", err)
+	}
+	if !exists {
+		sub, err = c.client.CreateSubscription(ctx, subName, pubsub.SubscriptionConfig{
+			Topic:       t,
+			AckDeadline: 60 * time.Second,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create subscription: %w", err)
+		}
 	}
 
 	for {

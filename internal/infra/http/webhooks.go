@@ -5,17 +5,18 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/candidate-ingestion/service/internal/service"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+
+	"github.com/candidate-ingestion/service/internal/domain/service"
 )
 
 type WebhookHandler struct {
-	svc *service.WebhookService
+	svc service.ApplicationIngester
 	log *logrus.Logger
 }
 
-func NewWebhookHandler(svc *service.WebhookService, log *logrus.Logger) *WebhookHandler {
+func NewWebhookHandler(svc service.ApplicationIngester, log *logrus.Logger) *WebhookHandler {
 	return &WebhookHandler{svc: svc, log: log}
 }
 
@@ -51,7 +52,7 @@ func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	// Parse and queue
-	appID, err := h.svc.IngestWebhook(r.Context(), source, idempotencyKey, body, reqLog)
+	appID, err := h.svc.Ingest(r.Context(), source, idempotencyKey, body, reqLog)
 	if err != nil {
 		reqLog.WithError(err).Warn("webhook ingestion failed")
 		http.Error(w, err.Error(), http.StatusBadRequest)

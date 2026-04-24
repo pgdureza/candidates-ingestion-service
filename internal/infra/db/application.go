@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/candidate-ingestion/service/internal/domain"
+	"github.com/candidate-ingestion/service/internal/domain/model"
 )
 
+// TODO - move into service
 // StoreApplicationWithOutbox atomically stores application + outbox event (transactional outbox)
 func (d *DB) StoreApplicationWithOutbox(
 	ctx context.Context,
-	app *domain.CandidateApplication,
-	outbox *domain.OutboxEvent,
+	app *model.CandidateApplication,
+	outbox *model.OutboxEvent,
 ) error {
 	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
@@ -51,7 +52,7 @@ func (d *DB) StoreApplicationWithOutbox(
 }
 
 // GetUnpublishedOutboxEvents gets events to publish
-func (d *DB) GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]domain.OutboxEvent, error) {
+func (d *DB) GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]model.OutboxEvent, error) {
 	rows, err := d.conn.QueryContext(
 		ctx,
 		`SELECT id, application_id, event_type, payload, published, created_at
@@ -63,9 +64,9 @@ func (d *DB) GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]domai
 	}
 	defer rows.Close()
 
-	var events []domain.OutboxEvent
+	var events []model.OutboxEvent
 	for rows.Next() {
-		var event domain.OutboxEvent
+		var event model.OutboxEvent
 		err := rows.Scan(
 			&event.ID, &event.ApplicationID, &event.EventType, &event.Payload,
 			&event.Published, &event.CreatedAt,

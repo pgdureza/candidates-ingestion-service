@@ -7,11 +7,12 @@ import (
 	"time"
 
 	pubsubgcp "cloud.google.com/go/pubsub"
-	"github.com/candidate-ingestion/service/internal/domain"
-	"github.com/candidate-ingestion/service/internal/infra/db"
-	"github.com/candidate-ingestion/service/internal/infra/pubsub"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+
+	"github.com/candidate-ingestion/service/internal/domain/model"
+	"github.com/candidate-ingestion/service/internal/infra/db"
+	"github.com/candidate-ingestion/service/internal/infra/pubsub"
 )
 
 // Pool bulkhead pattern: bounded goroutine pool
@@ -108,7 +109,7 @@ func (p *Pool) processMessage(ctx context.Context, data []byte, log *logrus.Entr
 	log.Info("idempotency check passed, processing new message")
 
 	// Reconstruct application from message
-	app := &domain.CandidateApplication{
+	app := &model.CandidateApplication{
 		ID:          toString(appData["id"]),
 		FirstName:   toString(appData["first_name"]),
 		LastName:    toString(appData["last_name"]),
@@ -129,7 +130,7 @@ func (p *Pool) processMessage(ctx context.Context, data []byte, log *logrus.Entr
 	}).Debug("application reconstructed from message")
 
 	// Create outbox event
-	outbox := &domain.OutboxEvent{
+	outbox := &model.OutboxEvent{
 		ID:            uuid.New().String(),
 		ApplicationID: app.ID,
 		EventType:     "application.created",

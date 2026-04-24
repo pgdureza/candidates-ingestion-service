@@ -1,4 +1,4 @@
-package service
+package applicationingester
 
 import (
 	"context"
@@ -6,32 +6,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/candidate-ingestion/service/internal/domain"
-	"github.com/candidate-ingestion/service/internal/infra/db"
-	"github.com/candidate-ingestion/service/internal/infra/pubsub"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+
+	"github.com/candidate-ingestion/service/internal/usecase/applicationparser"
 )
 
-type WebhookService struct {
-	db        *db.DB
-	ps        *pubsub.Client
-	topic     string
-	breaker   *CircuitBreaker
-}
-
-func NewWebhookService(d *db.DB, p *pubsub.Client, topic string) *WebhookService {
-	return &WebhookService{
-		db:      d,
-		ps:      p,
-		topic:   topic,
-		breaker: NewCircuitBreaker(5, 60*time.Second, 30*time.Second), // fail threshold, open timeout, half-open
-	}
-}
-
 // IngestWebhook parses, stores, and publishes to broker
-// Does NOT block on DB writes (async via worker pool)
-func (s *WebhookService) IngestWebhook(
+func (s *Ingester) Ingest(
 	ctx context.Context,
 	source string,
 	idempotencyKey string,
@@ -49,13 +31,12 @@ func (s *WebhookService) IngestWebhook(
 	}
 	log.Debug("idempotency check passed, processing new webhook")
 
-	// Parse via strategy
-	strategy, err := domain.StrategyFactory(source)
+	parser, err := applicationparser.NewCandidateApplicationParser(source)
 	if err != nil {
 		return "", err
 	}
 
-	app, err := strategy.Parse(payload)
+	app, err := parser.Parse(payload)
 	if err != nil {
 		log.WithError(err).Warn("webhook parsing failed")
 		return "", err
@@ -72,10 +53,10 @@ func (s *WebhookService) IngestWebhook(
 		return "", fmt.Errorf("failed to store idempotency key: %w", err)
 	}
 	log.WithFields(logrus.Fields{
-		"app_id":      app.ID,
-		"first_name":  app.FirstName,
-		"last_name":   app.LastName,
-		"email":       app.Email,
+		"app_id":     app.ID,
+		"first_name": app.FirstName,
+		"last_name":  app.LastName,
+		"email":      app.Email,
 	}).Debug("idempotency key stored")
 
 	// Publish to broker (fast, decoupled)

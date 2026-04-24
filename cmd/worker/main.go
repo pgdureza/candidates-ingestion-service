@@ -8,7 +8,7 @@ import (
 
 	"github.com/candidate-ingestion/service/internal/config"
 	"github.com/candidate-ingestion/service/internal/di"
-	"github.com/candidate-ingestion/service/internal/logger"
+	"github.com/candidate-ingestion/service/internal/infra/logger"
 )
 
 func main() {
@@ -18,7 +18,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	container, err := di.BuildWorker(ctx, cfg)
+	container, err := di.NewWorker(ctx, cfg)
 	if err != nil {
 		log.Fatalf("Failed to build worker: %v", err)
 	}

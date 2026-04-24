@@ -26,3 +26,6 @@ coverage.out
 
 # Docker
 .dockerignore
+
+CLAUDE.md
+.claude/settings.local.json

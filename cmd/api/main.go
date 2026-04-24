@@ -10,7 +10,7 @@ import (
 
 	"github.com/candidate-ingestion/service/internal/config"
 	"github.com/candidate-ingestion/service/internal/di"
-	"github.com/candidate-ingestion/service/internal/logger"
+	"github.com/candidate-ingestion/service/internal/infra/logger"
 )
 
 func main() {
@@ -20,7 +20,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	container, err := di.BuildAPI(ctx, cfg)
+	container, err := di.NewAPI(ctx, cfg)
 	if err != nil {
 		log.Fatalf("Failed to build API: %v", err)
 	}
@@ -29,7 +29,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.APIPort,
-		Handler:      container.App.Router(),
+		Handler:      container.Api.Router(),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
