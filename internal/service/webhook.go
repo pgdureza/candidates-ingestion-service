@@ -10,6 +10,7 @@ import (
 	"github.com/candidate-ingestion/service/internal/infra/db"
 	"github.com/candidate-ingestion/service/internal/infra/pubsub"
 	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 )
 
 type WebhookService struct {
@@ -35,6 +36,7 @@ func (s *WebhookService) IngestWebhook(
 	source string,
 	idempotencyKey string,
 	payload []byte,
+	log *logrus.Entry,
 ) (string, error) {
 	// Idempotency check
 	exists, appID, err := s.db.GetIdempotencyKey(ctx, idempotencyKey)
@@ -42,8 +44,10 @@ func (s *WebhookService) IngestWebhook(
 		return "", fmt.Errorf("idempotency check failed: %w", err)
 	}
 	if exists {
+		log.WithField("app_id", appID).Info("duplicate webhook, returning cached app id")
 		return appID, nil // Already processed
 	}
+	log.Debug("idempotency check passed, processing new webhook")
 
 	// Parse via strategy
 	strategy, err := domain.StrategyFactory(source)
@@ -53,8 +57,10 @@ func (s *WebhookService) IngestWebhook(
 
 	app, err := strategy.Parse(payload)
 	if err != nil {
+		log.WithError(err).Warn("webhook parsing failed")
 		return "", err
 	}
+	log.Debug("webhook parsed successfully")
 
 	// Generate ID
 	app.ID = uuid.New().String()
@@ -65,6 +71,12 @@ func (s *WebhookService) IngestWebhook(
 	if err := s.db.StoreIdempotencyKey(ctx, idempotencyKey, app.ID); err != nil {
 		return "", fmt.Errorf("failed to store idempotency key: %w", err)
 	}
+	log.WithFields(logrus.Fields{
+		"app_id":      app.ID,
+		"first_name":  app.FirstName,
+		"last_name":   app.LastName,
+		"email":       app.Email,
+	}).Debug("idempotency key stored")
 
 	// Publish to broker (fast, decoupled)
 	msgPayload, _ := json.Marshal(map[string]interface{}{
@@ -84,8 +96,10 @@ func (s *WebhookService) IngestWebhook(
 	if err != nil {
 		// Log but don't fail the request
 		// Worker will retry from DB later
-		fmt.Printf("Warning: Pub/Sub publish failed (will retry): %v\n", err)
+		log.WithError(err).Warn("pubsub publish failed (circuit breaker or timeout), worker will retry")
+		return app.ID, nil
 	}
 
+	log.WithField("app_id", app.ID).Info("webhook published to pubsub")
 	return app.ID, nil
 }

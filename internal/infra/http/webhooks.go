@@ -7,14 +7,16 @@ import (
 
 	"github.com/candidate-ingestion/service/internal/service"
 	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 )
 
 type WebhookHandler struct {
 	svc *service.WebhookService
+	log *logrus.Logger
 }
 
-func NewWebhookHandler(svc *service.WebhookService) *WebhookHandler {
-	return &WebhookHandler{svc: svc}
+func NewWebhookHandler(svc *service.WebhookService, log *logrus.Logger) *WebhookHandler {
+	return &WebhookHandler{svc: svc, log: log}
 }
 
 // HandleWebhook dispatches to appropriate strategy
@@ -22,6 +24,7 @@ func NewWebhookHandler(svc *service.WebhookService) *WebhookHandler {
 func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source") // Chi v5.0.12+
 	if source == "" {
+		h.log.WithField("path", r.URL.Path).Warn("webhook received with missing source")
 		http.Error(w, "source required", http.StatusBadRequest)
 		return
 	}
@@ -32,20 +35,30 @@ func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		idempotencyKey = uuid.New().String()
 	}
 
+	// Create request-scoped logger with correlation fields
+	reqLog := h.log.WithFields(logrus.Fields{
+		"source":          source,
+		"idempotency_key": idempotencyKey,
+	})
+	reqLog.Info("webhook received")
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		reqLog.WithError(err).Warn("failed to read request body")
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
 
 	// Parse and queue
-	appID, err := h.svc.IngestWebhook(r.Context(), source, idempotencyKey, body)
+	appID, err := h.svc.IngestWebhook(r.Context(), source, idempotencyKey, body, reqLog)
 	if err != nil {
+		reqLog.WithError(err).Warn("webhook ingestion failed")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	reqLog.WithField("app_id", appID).Info("webhook accepted, published to pubsub")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{

@@ -6,6 +6,7 @@ import (
 	"github.com/candidate-ingestion/service/internal/infra/pubsub"
 	"github.com/candidate-ingestion/service/internal/service"
 	"github.com/go-chi/chi/v5"
+	"github.com/sirupsen/logrus"
 )
 
 type App struct {
@@ -14,14 +15,16 @@ type App struct {
 	topic     string
 	router    *chi.Mux
 	whService *service.WebhookService
+	log       *logrus.Logger
 }
 
-func New(database *db.DB, pubsubClient *pubsub.Client, topic string) *App {
+func New(database *db.DB, pubsubClient *pubsub.Client, topic string, log *logrus.Logger) *App {
 	app := &App{
 		db:     database,
 		ps:     pubsubClient,
 		topic:  topic,
 		router: chi.NewRouter(),
+		log:    log,
 	}
 
 	app.whService = service.NewWebhookService(database, pubsubClient, topic)
@@ -31,7 +34,7 @@ func New(database *db.DB, pubsubClient *pubsub.Client, topic string) *App {
 }
 
 func (a *App) setupRoutes() {
-	whHandler := apphttp.NewWebhookHandler(a.whService)
+	whHandler := apphttp.NewWebhookHandler(a.whService, a.log)
 
 	a.router.Get("/health", whHandler.HandleHealth)
 	a.router.Post("/webhooks/{source}", whHandler.HandleWebhook)

@@ -7,6 +7,7 @@ import (
 	"github.com/candidate-ingestion/service/internal/config"
 	"github.com/candidate-ingestion/service/internal/infra/db"
 	"github.com/candidate-ingestion/service/internal/infra/pubsub"
+	"github.com/candidate-ingestion/service/internal/logger"
 	"github.com/candidate-ingestion/service/internal/worker"
 )
 
@@ -35,7 +36,8 @@ func BuildAPI(ctx context.Context, cfg *config.Config) (*APIContainer, error) {
 		return nil, err
 	}
 
-	application := app.New(database, ps, cfg.PubSubTopic)
+	log := logger.New(cfg.LogLevel)
+	application := app.New(database, ps, cfg.PubSubTopic, log)
 
 	return &APIContainer{
 		App:      application,
@@ -56,7 +58,8 @@ func BuildWorker(ctx context.Context, cfg *config.Config) (*WorkerContainer, err
 		return nil, err
 	}
 
-	pool := worker.NewPool(cfg.WorkerCount, cfg.WorkerTimeout, database, ps)
+	log := logger.New(cfg.LogLevel)
+	pool := worker.NewPool(cfg.WorkerCount, cfg.WorkerTimeout, database, ps, log)
 
 	return &WorkerContainer{
 		Pool:     pool,

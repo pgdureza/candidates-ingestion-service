@@ -7,22 +7,26 @@ import (
 )
 
 type Config struct {
-	APIPort        string
-	DatabaseURL    string
-	GCPProject     string
-	PubSubTopic    string
-	WorkerCount    int
-	WorkerTimeout  time.Duration
+	APIPort            string
+	DatabaseURL        string
+	GCPProject         string
+	PubSubTopic        string
+	PubSubEmulatorHost string
+	WorkerCount        int
+	WorkerTimeout      time.Duration
+	LogLevel           string
 }
 
 func Load() *Config {
 	return &Config{
-		APIPort:       getEnv("API_PORT", "8080"),
-		DatabaseURL:   getEnv("DATABASE_URL", "postgres://candidate:password@localhost:5432/candidates?sslmode=disable"),
-		GCPProject:    getEnv("GCP_PROJECT", "test-project"),
-		PubSubTopic:   getEnv("PUBSUB_TOPIC", "candidate-applications"),
-		WorkerCount:   getEnvInt("WORKER_COUNT", 10),
-		WorkerTimeout: getEnvDuration("WORKER_TIMEOUT", 30*time.Second),
+		APIPort:            getEnv("API_PORT", "8080"),
+		DatabaseURL:        getEnv("DATABASE_URL", "postgres://user:password@localhost:5432/candidates?sslmode=disable"),
+		GCPProject:         getEnv("GCP_PROJECT", "test-project"),
+		PubSubTopic:        getEnv("PUBSUB_TOPIC", "candidate-applications"),
+		PubSubEmulatorHost: getEnv("PUBSUB_EMULATOR_HOST", "localhost:8085"),
+		WorkerCount:        getEnvInt("WORKER_COUNT", 10),
+		WorkerTimeout:      getEnvDuration("WORKER_TIMEOUT", 30*time.Second),
+		LogLevel:           getEnv("LOG_LEVEL", "info"),
 	}
 }
 

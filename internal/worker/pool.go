@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
+	pubsubgcp "cloud.google.com/go/pubsub"
 	"github.com/candidate-ingestion/service/internal/domain"
 	"github.com/candidate-ingestion/service/internal/infra/db"
 	"github.com/candidate-ingestion/service/internal/infra/pubsub"
 	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 )
 
 // Pool bulkhead pattern: bounded goroutine pool
@@ -21,9 +22,10 @@ type Pool struct {
 	ps            *pubsub.Client
 	semaphore     chan struct{}
 	stopChan      chan struct{}
+	log           *logrus.Logger
 }
 
-func NewPool(workers int, timeout time.Duration, d *db.DB, p *pubsub.Client) *Pool {
+func NewPool(workers int, timeout time.Duration, d *db.DB, p *pubsub.Client, log *logrus.Logger) *Pool {
 	return &Pool{
 		workers:       workers,
 		workerTimeout: timeout,
@@ -31,17 +33,34 @@ func NewPool(workers int, timeout time.Duration, d *db.DB, p *pubsub.Client) *Po
 		ps:            p,
 		semaphore:     make(chan struct{}, workers),
 		stopChan:      make(chan struct{}),
+		log:           log,
 	}
 }
 
 // Start subscribes and processes messages
 func (p *Pool) Start(ctx context.Context, projectID string, topic string) error {
-	return p.ps.SubscribeAndProcess(ctx, topic, func(msgCtx context.Context, data []byte) error {
+	p.log.WithField("topic", topic).Info("waiting for messages")
+
+	return p.ps.SubscribeAndProcess(ctx, topic, func(msgCtx context.Context, msg *pubsubgcp.Message) error {
+		// Extract idempotency_key and message_id for correlation
+		var preview map[string]interface{}
+		_ = json.Unmarshal(msg.Data, &preview)
+		idempotencyKey, _ := preview["idempotency_key"].(string)
+
+		// Create message-scoped logger with correlation fields
+		msgLog := p.log.WithFields(logrus.Fields{
+			"idempotency_key": idempotencyKey,
+			"message_id":      msg.ID,
+		})
+		msgLog.Info("message consumed from pubsub")
+
 		// Acquire slot from semaphore (bulkhead)
 		select {
 		case p.semaphore <- struct{}{}:
 			defer func() { <-p.semaphore }()
 		case <-ctx.Done():
+			msgLog.Warn("context cancelled while waiting for semaphore, nacking")
+			msg.Nack()
 			return ctx.Err()
 		}
 
@@ -49,7 +68,16 @@ func (p *Pool) Start(ctx context.Context, projectID string, topic string) error 
 		workerCtx, cancel := context.WithTimeout(msgCtx, p.workerTimeout)
 		defer cancel()
 
-		return p.processMessage(workerCtx, data)
+		err := p.processMessage(workerCtx, msg.Data, msgLog)
+		if err != nil {
+			msgLog.WithError(err).Error("processing failed, nacking message")
+			msg.Nack()
+			return err
+		}
+
+		msgLog.Info("processing succeeded, acking message")
+		msg.Ack()
+		return nil
 	})
 }
 
@@ -58,24 +86,26 @@ func (p *Pool) Stop() {
 	close(p.stopChan)
 }
 
-func (p *Pool) processMessage(ctx context.Context, data []byte) error {
+func (p *Pool) processMessage(ctx context.Context, data []byte, log *logrus.Entry) error {
 	var msg map[string]interface{}
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}
+	log.Debug("message unmarshalled successfully")
 
 	idempotencyKey, _ := msg["idempotency_key"].(string)
 	appData, _ := msg["application"].(map[string]interface{})
 
 	// Idempotency: check if already processed
-	exists, _, err := p.db.GetIdempotencyKey(ctx, idempotencyKey)
+	exists, existingAppID, err := p.db.GetIdempotencyKey(ctx, idempotencyKey)
 	if err != nil {
 		return fmt.Errorf("idempotency check failed: %w", err)
 	}
 	if exists {
-		log.Printf("Message already processed (idempotency): %s", idempotencyKey)
+		log.WithField("app_id", existingAppID).Info("duplicate detected, skipping (idempotency)")
 		return nil
 	}
+	log.Info("idempotency check passed, processing new message")
 
 	// Reconstruct application from message
 	app := &domain.CandidateApplication{
@@ -91,6 +121,12 @@ func (p *Pool) processMessage(ctx context.Context, data []byte) error {
 		CreatedAt:   parseTime(appData["created_at"]),
 		UpdatedAt:   parseTime(appData["updated_at"]),
 	}
+	log.WithFields(logrus.Fields{
+		"app_id": app.ID,
+		"source": app.Source,
+		"email":  app.Email,
+		"name":   app.FirstName + " " + app.LastName,
+	}).Debug("application reconstructed from message")
 
 	// Create outbox event
 	outbox := &domain.OutboxEvent{
@@ -109,10 +145,18 @@ func (p *Pool) processMessage(ctx context.Context, data []byte) error {
 
 	// Mark outbox as published (in real app, publish to downstream service first)
 	if err := p.db.MarkOutboxEventPublished(ctx, outbox.ID); err != nil {
-		log.Printf("Warning: failed to mark outbox as published: %v", err)
+		log.WithFields(logrus.Fields{
+			"outbox_id": outbox.ID,
+			"app_id":    app.ID,
+		}).WithError(err).Warn("failed to mark outbox event as published")
 	}
 
-	log.Printf("Application persisted: %s (%s)", app.ID, app.Source)
+	log.WithFields(logrus.Fields{
+		"app_id": app.ID,
+		"source": app.Source,
+		"email":  app.Email,
+		"name":   app.FirstName + " " + app.LastName,
+	}).Info("application persisted successfully")
 	return nil
 }
 

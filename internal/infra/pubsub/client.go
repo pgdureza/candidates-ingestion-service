@@ -52,10 +52,11 @@ func (c *Client) PublishJSON(ctx context.Context, topic string, msg []byte) erro
 }
 
 // SubscribeAndProcess subscribes and processes messages with callback
+// Callback receives the raw message and is responsible for ACK/NAK
 func (c *Client) SubscribeAndProcess(
 	ctx context.Context,
 	topic string,
-	callback func(context.Context, []byte) error,
+	callback func(context.Context, *pubsub.Message) error, // cloud.google.com/go/pubsub.Message
 ) error {
 	sub, err := c.client.CreateSubscription(ctx, topic+"-sub", pubsub.SubscriptionConfig{
 		Topic:       c.client.Topic(topic),
@@ -74,12 +75,7 @@ func (c *Client) SubscribeAndProcess(
 		}
 
 		err := sub.Receive(ctx, func(ctx context.Context, msg *pubsub.Message) {
-			if err := callback(ctx, msg.Data); err != nil {
-				fmt.Printf("Callback error: %v\n", err)
-				msg.Nack()
-				return
-			}
-			msg.Ack()
+			_ = callback(ctx, msg)
 		})
 
 		if err != nil {

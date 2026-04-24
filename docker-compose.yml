@@ -1,20 +1,20 @@
-version: '3.8'
+version: "3.8"
 
 services:
   postgres:
     image: postgres:16-alpine
     container_name: candidates-postgres
     environment:
-      POSTGRES_USER: candidate
+      POSTGRES_USER: user
       POSTGRES_PASSWORD: password
       POSTGRES_DB: candidates
+    command: postgres -c listen_addresses='*' -c password_encryption='scram-sha-256'
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U candidate"]
+      test: ["CMD-SHELL", "pg_isready -U user -d candidates"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -41,12 +41,7 @@ services:
     container_name: candidates-api
     ports:
       - "8080:8080"
-    environment:
-      DATABASE_URL: postgres://candidate:password@postgres:5432/candidates?sslmode=disable
-      GCP_PROJECT: test-project
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
-      PUBSUB_TOPIC: candidate-applications
-      API_PORT: "8080"
+    env_file: .env
     command: ./api
     depends_on:
       postgres:
@@ -60,17 +55,10 @@ services:
       dockerfile: Dockerfile
       target: runtime
     container_name: candidates-worker
-    environment:
-      DATABASE_URL: postgres://candidate:password@postgres:5432/candidates?sslmode=disable
-      GCP_PROJECT: test-project
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
-      PUBSUB_TOPIC: candidate-applications
+    env_file: .env
     command: ./worker
     depends_on:
       postgres:
         condition: service_healthy
       pubsub-emulator:
         condition: service_healthy
-
-volumes:
-  postgres_data:

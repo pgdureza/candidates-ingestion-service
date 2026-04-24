@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,10 +10,13 @@ import (
 
 	"github.com/candidate-ingestion/service/internal/config"
 	"github.com/candidate-ingestion/service/internal/di"
+	"github.com/candidate-ingestion/service/internal/logger"
 )
 
 func main() {
 	cfg := config.Load()
+	log := logger.New(cfg.LogLevel)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -38,20 +40,20 @@ func main() {
 
 	go func() {
 		<-sigChan
-		log.Println("Shutdown signal received")
+		log.Info("Shutdown signal received")
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer shutdownCancel()
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Shutdown error: %v", err)
+			log.WithError(err).Error("Shutdown error")
 		}
 		cancel()
 	}()
 
-	log.Printf("Starting API on %s", srv.Addr)
+	log.WithField("port", cfg.APIPort).Info("Starting API")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
 
-	log.Println("Shutdown complete")
+	log.Info("Shutdown complete")
 }

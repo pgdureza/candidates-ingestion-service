@@ -28,7 +28,7 @@ up-deps:
 	docker-compose -f $(DOCKER_COMPOSE_FILE) up -d postgres pubsub-emulator
 	@echo "Waiting for services to be healthy..."
 	@sleep 3
-	docker-compose -f $(DOCKER_COMPOSE_FILE) exec -T postgres psql -U candidate -d candidates -c "SELECT 1"
+	docker-compose -f $(DOCKER_COMPOSE_FILE) exec -T postgres psql -U user -d candidates -c "SELECT 1"
 	@echo "Infrastructure ready: PostgreSQL on localhost:5432, PubSub on localhost:8085"
 
 up:
@@ -36,7 +36,7 @@ up:
 	docker-compose -f $(DOCKER_COMPOSE_FILE) up -d
 	@echo "Waiting for services to be healthy..."
 	@sleep 5
-	docker-compose -f $(DOCKER_COMPOSE_FILE) exec -T postgres psql -U candidate -d candidates -c "SELECT 1"
+	docker-compose -f $(DOCKER_COMPOSE_FILE) exec -T postgres psql -U user -d candidates -c "SELECT 1"
 	@echo "Stack ready: API on http://localhost:8080, PostgreSQL on localhost:5432, PubSub on 0.0.0.0:8085"
 
 down:

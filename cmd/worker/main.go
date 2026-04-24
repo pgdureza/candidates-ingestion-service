@@ -2,17 +2,19 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/candidate-ingestion/service/internal/config"
 	"github.com/candidate-ingestion/service/internal/di"
+	"github.com/candidate-ingestion/service/internal/logger"
 )
 
 func main() {
 	cfg := config.Load()
+	log := logger.New(cfg.LogLevel)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -25,7 +27,7 @@ func main() {
 
 	go func() {
 		if err := container.Pool.Start(ctx, cfg.GCPProject, cfg.PubSubTopic); err != nil {
-			log.Printf("Worker pool error: %v", err)
+			log.WithError(err).Error("Worker pool error")
 		}
 	}()
 
@@ -33,9 +35,9 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigChan
-	log.Println("Shutdown signal received")
+	log.Info("Shutdown signal received")
 	container.Pool.Stop()
 	cancel()
 
-	log.Println("Shutdown complete")
+	log.Info("Shutdown complete")
 }
