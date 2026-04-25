@@ -69,10 +69,10 @@ make trigger-failure
 
 ### 1. **Strategy Pattern**
 
-Webhook handlers normalize payloads from different sources (LinkedIn, Google Forms) via `domain.WebhookStrategy` interface.
+Webhook handlers normalize payloads from different sources (LinkedIn, Google Forms) via `service.CandidateParser` interface.
 
-- `LinkedInStrategy` - Parses LinkedIn webhook structure
-- `GoogleFormStrategy` - Parses Google Forms structure
+- `LinkedInParser` - Parses LinkedIn webhook structure
+- `GoogleFormParser` - Parses Google Forms structure
 - Pluggable: Add new sources without modifying core logic
 
 ### 2. **Decoupling & SLA Protection**
@@ -100,7 +100,7 @@ Worker pool bounds concurrent processing using semaphores.
 - Max 10 concurrent goroutines (configurable)
 - Each message acquisition must acquire semaphore slot
 - Prevents resource exhaustion under high load
-- Implemented in `worker.Pool`
+- Implemented in `internal/infra/pubsub/pool.go`
 
 ### 5. **Circuit Breaker**
 
@@ -110,7 +110,7 @@ Fast-fail on downstream failures.
 - States: Closed → Open → Half-Open → Closed
 - Fail threshold: 5 failures
 - Open timeout: 60s, Half-open timeout: 30s
-- Implemented in `service.CircuitBreaker`
+- Implemented in `internal/usecase/circuitbreaker/execute.go`
 
 ### 6. **Idempotency (Worker-Side Only)**
 
@@ -127,7 +127,6 @@ Per-IP rate limiting on webhook endpoint.
 
 - Configurable requests per minute (env: `WEBHOOK_RATE_LIMIT`)
 - Returns 429 Too Many Requests with `Retry-After: 60`
-- Metrics: `webhooks_rate_limited` counter
 
 ### 8. **Structured Logging**
 
@@ -136,7 +135,7 @@ JSON logging with correlation IDs throughout pipeline.
 - Logrus with RFC3339 timestamps
 - Log levels configurable (env: `LOG_LEVEL`)
 
-### 9. **Observability**
+### 9. **Observability** (not realistic)
 
 Metrics endpoint for monitoring. Not realistic, but just for here for demo purposes.
 
@@ -336,7 +335,7 @@ Metrics endpoint. Returns counters for entire pipeline.
 - `outbox_publish_success` - Successfully notified downstream
 - `outbox_publish_failed` - Notification failures (logged, will retry)
 - `notification_failed` - Persistent failures after retries
-- `outbox_cleaned` - Events deleted by cleanup job (>30 days)
+- `outbox_cleaned` - Events deleted by cleanup job (past retention days)
 
 ## Resilience Features
 

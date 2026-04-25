@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/candidate-ingestion/service/internal/domain"
 )
 
 // IngestWebhook parses, stores, and publishes to broker
@@ -41,11 +43,9 @@ func (s *Ingester) Ingest(
 	})
 
 	if err != nil {
-		// Log but don't fail the request
-		// Worker will retry from DB later
-		s.logger.WithError(err).Warn("pubsub publish failed (circuit breaker or timeout), worker will retry")
+		s.logger.WithError(err).Warn("pubsub publish failed (circuit breaker or timeout)")
 		s.db.Metrics().IncrementMetric(ctx, "webhooks_rejected", 1)
-		return candidate.ID, nil
+		return "", domain.NewCircuitBreakerError(err)
 	}
 
 	s.logger.WithField("app_id", candidate.ID).Info("webhook published to pubsub")

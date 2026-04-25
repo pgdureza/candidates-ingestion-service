@@ -2,11 +2,13 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/candidate-ingestion/service/internal/domain"
 	"github.com/candidate-ingestion/service/internal/domain/repo"
 	"github.com/candidate-ingestion/service/internal/domain/service"
 )
@@ -52,7 +54,13 @@ func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.db.Metrics().IncrementMetric(r.Context(), "webhooks_rejected", 1)
 		logger.WithError(err).Warn("webhook ingestion failed")
-		http.Error(w, err.Error(), http.StatusBadRequest)
+
+		var cbErr *domain.CircuitBreakerError
+		statusCode := http.StatusBadRequest
+		if errors.As(err, &cbErr) {
+			statusCode = http.StatusServiceUnavailable
+		}
+		http.Error(w, err.Error(), statusCode)
 		return
 	}
 

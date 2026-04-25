@@ -89,7 +89,6 @@ Event-driven microservice for ingesting candidate applications from multiple sou
 
 - `internal/infra/http/webhooks.go` - HTTP handler
 - `internal/service/webhook.go` - Business logic (publish + logging)
-- `internal/app/app.go` - App container
 - `internal/di/api.go` - Dependency injection
 
 **Reliability:**
@@ -114,7 +113,6 @@ Event-driven microservice for ingesting candidate applications from multiple sou
 
 - `internal/infra/pubsub/pool.go` - Worker pool + message handler
 - `internal/infra/pubsub/client.go` - Pub/Sub subscription
-- `internal/usecase/candidate/processing/pool.go` - Message processing logic
 - `internal/di/worker.go` - Dependency injection
 
 **Deduplication:**
@@ -155,7 +153,6 @@ db.WithTransaction(ctx, func(txCtx context.Context) error {
 **Key files:**
 
 - `internal/infra/poller/poller.go` - Polling loop + notification orchestration
-- `internal/usecase/candidate/processing/notify.go` - Notification logic
 - `internal/infra/postgres/outbox.go` - Outbox queries (GetUnpublishedForUpdate)
 - `internal/di/poller.go` - Dependency injection
 
@@ -163,7 +160,6 @@ db.WithTransaction(ctx, func(txCtx context.Context) error {
 
 - Single replica guarantees exactly one poller instance
 - Transaction extended through fetch only (not notification)
-- Locks released immediately after batch fetch
 
 **Failure Handling:**
 
@@ -206,7 +202,7 @@ db.WithTransaction(ctx, func(txCtx context.Context) error {
    ↓ (at-least-once delivery)
 3. Worker receives message
    ↓ (check idempotency_key)
-4. Query: SELECT ... FROM candidate_applications WHERE source='linkedin' AND source_ref_id=?
+4. Query: SELECT ... FROM candidate_applications WHERE source=? AND source_ref_id=?
    ├─ If exists: skip, log duplicate, ACK message
    └─ If new: proceed
    ↓ (start transaction)
@@ -219,15 +215,9 @@ db.WithTransaction(ctx, func(txCtx context.Context) error {
 ### Notification Flow (Outbox Poller)
 
 ```
-1. Every 5 seconds:
-   ↓
-2. START TRANSACTION
-   ↓
-3. SELECT * FROM outbox_events WHERE published=false LIMIT 10 FOR UPDATE
-   ↓ (acquire exclusive row locks)
-4. COMMIT (release locks)
-   ↓
-5. For each event (outside transaction, unlocked):
+1. Every X seconds:
+2. SELECT * FROM outbox_events WHERE published=false LIMIT 10
+3. For each event:
    ├─ Notify external system
    ├─ On success: Mark event as published
    └─ On failure: Log, keep unpublished (retry next cycle)
@@ -270,15 +260,14 @@ INDEX (published, created_at) -- for polling query
 
 ### API Publishing Fails
 
-- Circuit breaker opens after 5+ consecutive failures
-- Returns 202 Accepted with app_id anyway (non-blocking)
-- Client can query app_id status later
+- Circuit breaker opens after X consecutive failures
+- Returns 503 when circuit breaker is open
 - Next cycle: circuit breaker half-open attempts recovery
 
 ### Worker Message Processing Fails
 
 - NAK message (returns to Pub/Sub)
-- Pub/Sub retries with exponential backoff (default: up to 7 days)
+- Pub/Sub has built in retry mechanism
 - Duplicate app_id triggers skip (idempotency), ACK succeeds
 
 ### Notification Service Unavailable
@@ -543,14 +532,6 @@ External World
 | DI      | Everything      | (wiring layer)       |
 | Main    | DI, Config      | Business logic       |
 
-**Violation detection:**
-
-Run `go vet ./...` and code review to catch imports like:
-
-- ❌ `usecase/` importing `infra/` - breaks testability, couples to implementation
-- ❌ `domain/` importing `usecase/` or `infra/` - breaks reusability
-- ❌ `infra/` importing another `infra/` directly - should go through domain interface
-
 ---
 
 ## Design Decisions
@@ -604,14 +585,6 @@ Run `go vet ./...` and code review to catch imports like:
 - **Scheduler (CronJob):** No need for continuous running. Kubernetes runs on schedule, scales to 0 otherwise
 
 **Benefit:** Each service has its own scaling profile. API doesn't waste resources during off-peak. Worker throughput independent of webhook arrival rate.
-
-### Why Idempotency on Worker, Not API?
-
-- **Alternative considered:** Store idempotency_keys at API layer, check before publishing
-- **Rejected because:** Extra DB write per request (even on retry), idempotency table becomes hot partition, adds complexity to API DI
-- **Chosen:** Unique constraint on `(source, source_ref_id)`, dedup check on worker
-- **Trade-off:** API may publish duplicate messages, but worker guarantees at-most-once storage
-- **Benefit:** Simpler API, cheaper storage, same guarantee
 
 ### Why Separate Notification from Storage (Eventual Consistency)?
 

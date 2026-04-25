@@ -59,6 +59,24 @@ lint:
 	@which golangci-lint > /dev/null || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
 	golangci-lint run ./...
 
+
+duplicate-test:
+	@echo "Sending 10 requests to http://localhost:8080"
+	@for i in {1..10}; do \
+		echo "Sending request $$i/10..."; \
+		curl -s -X POST http://localhost:8080/webhooks/linkedin \
+			-H "Content-Type: application/json" \
+			-d '{ \
+				"id": "fixed-id-1234", \
+				"firstName": "Test", \
+				"lastName": "User", \
+				"email": "test-user@example.com", \
+				"phone": "555-0000", \
+				"jobTitle": "Engineer" \
+			}' > /dev/null; \
+	done
+	@echo "Done."
+
 # Stress Testing
 stress-test:
 	@echo "Running stress test against http://localhost:8080"
