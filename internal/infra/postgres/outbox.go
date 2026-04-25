@@ -72,38 +72,6 @@ func (or *OutboxRepo) GetUnpublished(ctx context.Context, limit int) ([]model.Ou
 	return events, rows.Err()
 }
 
-// GetUnpublishedForUpdate gets unpublished events with row-level locks (FOR UPDATE)
-// Prevents multiple workers from processing the same events
-// Must be called within a transaction context
-func (or *OutboxRepo) GetUnpublishedForUpdate(ctx context.Context, limit int) ([]model.OutboxEvent, error) {
-	executor := or.db.getTx(ctx)
-	rows, err := executor.QueryContext(
-		ctx,
-		`SELECT id, event_type, payload, published, created_at
-		FROM outbox_events WHERE published = false ORDER BY created_at ASC LIMIT $1 FOR UPDATE`,
-		limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query failed: %w", err)
-	}
-	defer rows.Close()
-
-	var events []model.OutboxEvent
-	for rows.Next() {
-		var event model.OutboxEvent
-		err := rows.Scan(
-			&event.ID, &event.EventType, &event.Payload,
-			&event.Published, &event.CreatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("scan failed: %w", err)
-		}
-		events = append(events, event)
-	}
-
-	return events, rows.Err()
-}
-
 // Cleanup deletes outbox events older than retentionDays
 func (or *OutboxRepo) Cleanup(ctx context.Context, retentionDays int) (int64, error) {
 	result, err := or.db.conn.ExecContext(

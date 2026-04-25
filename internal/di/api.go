@@ -53,7 +53,7 @@ func NewAPI(ctx context.Context, cfg *config.Config) (*API, error) {
 
 	// routes
 	router := chi.NewRouter()
-	webhhookHandler := apphttp.NewWebhookHandler(ingester, logger)
+	webhhookHandler := apphttp.NewWebhookHandler(ingester, logger, database)
 	metricsHandler := apphttp.NewMetricsHandler(collector)
 	rateLimiter := apphttp.NewRateLimiter(cfg.WebhookRateLimit, database)
 

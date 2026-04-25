@@ -34,7 +34,7 @@ spec:
       containers:
         - name: api
           image: candidate-ingestion:latest
-          imagePullPolicy: Always
+          imagePullPolicy: Never
 
           ports:
             - containerPort: 8080

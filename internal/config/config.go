@@ -48,7 +48,7 @@ func Load() *Config {
 		WorkerTimeout:    getEnvDuration("WORKER_TIMEOUT", 30*time.Second),
 		LogLevel:         getEnv("LOG_LEVEL", "info"),
 		PollIntervalMs:   getEnvInt("POLL_INTERVAL_MS", 1000),
-		WebhookRateLimit: getEnvInt("WEBHOOK_RATE_LIMIT", 1000),
+		WebhookRateLimit: getEnvInt("WEBHOOK_RATE_LIMIT", 5000),
 		Outbox: OutboxConfig{
 			RetentionDays:   getEnvInt("OUTBOX_RETENTION_DAYS", 0),
 			CleanupSchedule: getEnv("OUTBOX_CLEANUP_SCHEDULE", "@every 15s"),

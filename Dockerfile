@@ -29,6 +29,8 @@ COPY --from=builder /app/worker .
 COPY --from=builder /app/scheduler .
 COPY --from=builder /app/poller .
 
+RUN chmod +x ./api ./worker ./scheduler ./poller
+
 EXPOSE 8080
 
 # Default to API; override with: docker run [...] ./worker

@@ -30,7 +30,7 @@ spec:
           containers:
             - name: scheduler
               image: candidate-ingestion:latest
-              imagePullPolicy: Always
+              imagePullPolicy: Never
 
               env:
                 - name: DATABASE_URL

@@ -5,7 +5,7 @@ DOCKER_IMAGE ?= candidate-ingestion:latest
 DOCKER_COMPOSE_FILE ?= docker-compose.yml
 KUBE_NAMESPACE ?= candidate-ingestion-service
 STRESS_TEST_DURATION ?= 10
-STRESS_TEST_CONCURRENCY ?= 30
+STRESS_TEST_CONCURRENCY ?= 50
 
 help:
 	@echo "Available commands:"
@@ -118,10 +118,16 @@ k8s-delete:
 	kubectl delete -f k8s/shared.yaml -f k8s/api.yaml -f k8s/worker.yaml -f k8s/poller.yaml -f k8s/scheduler.yaml -f k8s/hpa.yaml -n $(KUBE_NAMESPACE) --ignore-not-found
 
 k8s-logs:
-	kubectl logs -f deployment/candidate-ingestion-service -n $(KUBE_NAMESPACE)
+	kubectl logs -f deployment/candidate-ingestion-api -n $(KUBE_NAMESPACE)
 
 k8s-describe:
 	kubectl describe pod -n $(KUBE_NAMESPACE) -l app=candidate-ingestion
+
+k8s-pods:
+	kubectl get pods -n candidate-ingestion-service
+
+k8s-cron:
+	kubectl get cronjobs -n candidate-ingestion-service
 
 # Local development
 api:
