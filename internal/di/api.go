@@ -14,6 +14,7 @@ import (
 	"github.com/candidate-ingestion/service/internal/infra/pubsub"
 	candidateingestion "github.com/candidate-ingestion/service/internal/usecase/candidate/ingestion"
 	"github.com/candidate-ingestion/service/internal/usecase/circuitbreaker"
+	"github.com/candidate-ingestion/service/internal/usecase/metrics"
 )
 
 type API struct {
@@ -45,10 +46,14 @@ func NewAPI(ctx context.Context, cfg *config.Config) (*API, error) {
 	cb := circuitbreaker.NewCircuitBreaker(5, 60*time.Second, 30*time.Second)
 	ingester := candidateingestion.NewCandidateApplicationIngester(database, ps, topic, cb, logger)
 
+	collector := metrics.NewMetricsCollector(database)
+
 	// routes
 	router := chi.NewRouter()
 	webhhookHandler := apphttp.NewWebhookHandler(ingester, logger)
+	metricsHandler := apphttp.NewMetricsHandler(collector)
 	router.Get("/health", webhhookHandler.HandleHealth)
+	router.Get("/metrics", metricsHandler.HandleMetrics)
 	router.Post("/webhooks/{source}", webhhookHandler.HandleWebhook)
 
 	return &API{

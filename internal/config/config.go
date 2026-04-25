@@ -35,7 +35,7 @@ func Load() *Config {
 		WorkerCount:           getEnvInt("WORKER_COUNT", 10),
 		WorkerTimeout:         getEnvDuration("WORKER_TIMEOUT", 30*time.Second),
 		LogLevel:              getEnv("LOG_LEVEL", "info"),
-		PollIntervalMs:        getEnvInt("POLL_INTERVAL_MS", 1),
+		PollIntervalMs:        getEnvInt("POLL_INTERVAL_MS", 1000),
 		OutboxRetentionDays:   getEnvInt("OUTBOX_RETENTION_DAYS", 0),
 		OutboxCleanupSchedule: getEnv("OUTBOX_CLEANUP_SCHEDULE", "@every 15s"),
 		OutboxBatchSize:       getEnvInt("OUTBOX_BATCH_SIZE", 50),

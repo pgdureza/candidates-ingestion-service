@@ -1,11 +1,11 @@
-.PHONY: up down api worker scheduler poller test lint stress-test trigger-failure k8s-deploy k8s-delete help
+.PHONY: up down api worker scheduler poller test lint stress-test trigger-failure k8s-deploy k8s-delete metrics help
 
 # Variables
 DOCKER_IMAGE ?= candidate-ingestion:latest
 DOCKER_COMPOSE_FILE ?= docker-compose.yml
 KUBE_NAMESPACE ?= candidate-ingestion-service
-STRESS_TEST_DURATION ?= 3
-STRESS_TEST_CONCURRENCY ?= 50
+STRESS_TEST_DURATION ?= 10
+STRESS_TEST_CONCURRENCY ?= 10
 
 help:
 	@echo "Available commands:"
@@ -16,6 +16,7 @@ help:
 	@echo "  make worker             Run worker locally (go run ./cmd/worker)"
 	@echo "  make scheduler          Run scheduler locally (go run ./cmd/scheduler)"
 	@echo "  make poller             Run outbox poller locally (go run ./cmd/poller)"
+	@echo "  make metrics            Poll API /metrics endpoint (updates every 200ms)"
 	@echo "  make test               Run unit tests"
 	@echo "  make lint               Run linter"
 	@echo "  make stress-test        Simulate traffic spike"
@@ -35,7 +36,7 @@ up-deps:
 
 up:
 	@echo "Starting full stack..."
-	docker-compose -f $(DOCKER_COMPOSE_FILE) up
+	docker-compose -f $(DOCKER_COMPOSE_FILE) up -d
 	@echo "Waiting for services to be healthy..."
 	@sleep 5
 	docker-compose -f $(DOCKER_COMPOSE_FILE) exec -T postgres psql -U user -d candidates -c "SELECT 1"
@@ -64,23 +65,27 @@ stress-test:
 	@echo "Duration: $(STRESS_TEST_DURATION)s, Concurrency: $(STRESS_TEST_CONCURRENCY)"
 	@bash -c '\
 		for i in {1..$(STRESS_TEST_CONCURRENCY)}; do \
-			(for j in {1..100}; do \
-				curl -s -X POST http://localhost:8080/webhooks/linkedin \
-					-H "Content-Type: application/json" \
-					-H "Idempotency-Key: stress-test-$$i-$$j" \
-					-d "{ \
-						\"id\": \"linkedin-stress-$$i-$$j\", \
-						\"firstName\": \"Test\", \
-						\"lastName\": \"User\", \
-						\"email\": \"test$$i$$j@example.com\", \
-						\"phone\": \"555-0000\", \
-						\"jobTitle\": \"Engineer\" \
-					}" > /dev/null; \
-			done) & \
+			( \
+				END_TIME=$$(($$SECONDS + $(STRESS_TEST_DURATION))); \
+				while [ $$SECONDS -lt $$END_TIME ]; do \
+					UNIQUE_ID="$$(date +%s%N)-$$i"; \
+					curl -s -X POST http://localhost:8080/webhooks/linkedin \
+						-H "Content-Type: application/json" \
+						-H "Idempotency-Key: key-$$UNIQUE_ID" \
+						-d "{ \
+							\"id\": \"$$UNIQUE_ID\", \
+							\"firstName\": \"Test\", \
+							\"lastName\": \"User\", \
+							\"email\": \"test-$$UNIQUE_ID@example.com\", \
+							\"phone\": \"555-0000\", \
+							\"jobTitle\": \"Engineer\" \
+						}" > /dev/null; \
+				done \
+			) & \
 		done; \
 		wait \
 	'
-	@echo "Stress test complete. Check HPA status with: kubectl get hpa -n $(KUBE_NAMESPACE)"
+	@echo "Stress test complete."
 
 # Failure Injection
 trigger-failure:
@@ -131,6 +136,19 @@ scheduler:
 
 poller:
 	go run ./cmd/poller
+
+metrics:
+	@bash -c '\
+		while true; do \
+			clear; \
+			echo "=== Candidate Ingestion Metrics (refreshing every 200ms, Ctrl+C to exit) ==="; \
+			echo ""; \
+			curl -s http://localhost:8080/metrics | jq . 2>/dev/null || echo "Error: Unable to connect to API on localhost:8080"; \
+			echo ""; \
+			echo "Last updated: $$(date +"%H:%M:%S")"; \
+			sleep 0.2; \
+		done \
+	'
 
 dev-setup:
 	go mod download

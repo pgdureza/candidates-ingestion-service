@@ -49,3 +49,7 @@ func (d *DB) Candidates() repo.CandidateRepo {
 func (d *DB) Outbox() repo.OutboxRepo {
 	return &OutboxRepo{db: d}
 }
+
+func (d *DB) Metrics() repo.MetricsRepo {
+	return &MetricsRepo{db: d}
+}

@@ -10,5 +10,6 @@ type DB interface {
 	Close() error
 	Candidates() CandidateRepo
 	Outbox() OutboxRepo
+	Metrics() MetricsRepo
 	WithTransaction(ctx context.Context, fn func(context.Context) error) error
 }
