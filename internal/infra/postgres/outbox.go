@@ -74,9 +74,12 @@ func (or *OutboxRepo) GetUnpublished(ctx context.Context, limit int) ([]model.Ou
 
 // Cleanup deletes outbox events older than retentionDays
 func (or *OutboxRepo) Cleanup(ctx context.Context, retentionDays int) (int64, error) {
+	// add an additional 5 seconds delay so no race condition with metrics
 	result, err := or.db.conn.ExecContext(
 		ctx,
-		`DELETE FROM outbox_events WHERE created_at < NOW() - INTERVAL '1 day' * $1`,
+		`DELETE FROM outbox_events 
+     WHERE published = TRUE 
+       AND published_at < NOW() - (INTERVAL '1 day' * $1 + INTERVAL '5 seconds')`,
 		retentionDays,
 	)
 	if err != nil {

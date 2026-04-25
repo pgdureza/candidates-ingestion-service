@@ -51,7 +51,7 @@ func Load() *Config {
 		WebhookRateLimit: getEnvInt("WEBHOOK_RATE_LIMIT", 5000),
 		Outbox: OutboxConfig{
 			RetentionDays:   getEnvInt("OUTBOX_RETENTION_DAYS", 0),
-			CleanupSchedule: getEnv("OUTBOX_CLEANUP_SCHEDULE", "@every 15s"),
+			CleanupSchedule: getEnv("OUTBOX_CLEANUP_SCHEDULE", "@every 10s"),
 			BatchSize:       getEnvInt("OUTBOX_BATCH_SIZE", 50),
 		},
 		CircuitBreaker: CircuitBreakerConfig{

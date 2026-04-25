@@ -36,6 +36,7 @@ func (cp *CandidateProcesor) Execute(ctx context.Context) {
 
 		var candidate model.Candidate
 		if err := json.Unmarshal([]byte(event.Payload), &candidate); err != nil {
+			cp.db.Metrics().IncrementMetric(ctx, "outbox_publish_failed", 1)
 			l.WithError(err).Warn("Failed to notify, could not unmarshal outbox payload")
 			continue
 		}

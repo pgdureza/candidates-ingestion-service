@@ -44,7 +44,7 @@ Event-driven microservice for ingesting candidate applications from multiple sou
     │ candidate_notes     │
     └─────────────────────┘
              ▲
-             │ fetch (SELECT FOR UPDATE)
+             │ fetch
              │ mark published (UPDATE)
              │
 ┌────────────┴────────────────────────────────────────────────┐
@@ -136,7 +136,7 @@ db.WithTransaction(ctx, func(txCtx context.Context) error {
 
 **Logging:**
 
-- All stages logged with idempotency_key + message_id
+- All stages logged with message_id
 - Structured JSON output for observability
 - Duplicate hits logged as INFO (not errors)
 
@@ -162,7 +162,6 @@ db.WithTransaction(ctx, func(txCtx context.Context) error {
 **Concurrency Safety:**
 
 - Single replica guarantees exactly one poller instance
-- Row-level locking (`SELECT FOR UPDATE`) prevents race conditions
 - Transaction extended through fetch only (not notification)
 - Locks released immediately after batch fetch
 
@@ -383,7 +382,6 @@ docker run candidate-ingestion:latest ./scheduler
 
 ### Tracing
 
-- Request flows via idempotency_key: API → Pub/Sub → Worker → (Outbox if needed)
 - Same key in logs enables full lifecycle observability
 
 ---
@@ -412,7 +410,7 @@ WORKER_TIMEOUT=30s               # per-message timeout
 (inherits DATABASE_URL, LOG_LEVEL)
 
 # Scheduler
-OUTBOX_RETENTION_DAYS=30         # cleanup retention
+OUTBOX_RETENTION_TIME_S=30         # cleanup retention
 ```
 
 ---
@@ -569,12 +567,6 @@ Run `go vet ./...` and code review to catch imports like:
 - **Solution:** Single dedicated poller service
 - **Benefit:** Eliminates concurrency complexity, clearer semantics
 
-### Why Row-Level Locking (SELECT FOR UPDATE)?
-
-- **Problem:** Single poller still needs safety (transaction boundaries, exactly-once per event)
-- **Solution:** Fetch events within transaction with exclusive locks
-- **Benefit:** Prevents multiple transactions from seeing same events
-
 ### Why Eventual Consistency on Notifications?
 
 - **Problem:** Notification service may be slow/unreliable
@@ -620,12 +612,6 @@ Run `go vet ./...` and code review to catch imports like:
 - **Chosen:** Unique constraint on `(source, source_ref_id)`, dedup check on worker
 - **Trade-off:** API may publish duplicate messages, but worker guarantees at-most-once storage
 - **Benefit:** Simpler API, cheaper storage, same guarantee
-
-### Why Database Transaction for Outbox Fetch (SELECT FOR UPDATE)?
-
-- **Problem:** Without locking, two poller instances could fetch same event in different transactions
-- **Solution:** Fetch events with exclusive row locks within transaction
-- **Benefit:** Ensures exactly-once fetch, prevents race conditions even if poller restarts mid-notification
 
 ### Why Separate Notification from Storage (Eventual Consistency)?
 

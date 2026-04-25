@@ -1,10 +1,18 @@
 # Candidate Application Ingestion Service
 
-High-performance Go microservice demonstrating resilience and architectural patterns. Check the `ARCHITECTURE.md` file for more information.
+Problem: Reliable High-Volume Ingestion
+
+In a high-growth recruitment ecosystem, candidate applications arrive via webhooks from fragmented sources (LinkedIn, Google Forms, Greenhouse, etc.). This system addresses three critical business challenges:
+
+- Candidate applications arrive via webhooks from fragmented sources that require fast response due to SLA
+- Our Internal process calles a Notifier process but is very unreliable
+- We want 100% reliability for all candidate applications that were successfully accepted
+
+Check the `ARCHITECTURE.md` file for more information.
 
 ## How to Run locally
 
-To see in action, use 2 terminals.
+To see in action, use 3 terminals.
 
 Spin up all the docker containers.
 
@@ -24,6 +32,12 @@ Run the stress test to continuously spam with multiple requests
 make stress-test
 ```
 
+For triggering circuit breaker
+
+```terminal3
+make trigger-failure
+```
+
 ## Architecture Patterns
 
 ### Four Independent Services
@@ -33,17 +47,17 @@ make stress-test
 - Receives webhooks, validates, publishes to Pub/Sub immediately
 - Returns 202 Accepted (decoupled, no database writes in request cycle)
 - Rate limiting: per-IP, configurable
+- Scales on demand (WIP)
 
 **2. Worker** - Message processing, dedup, storage (1-10 replicas)
 
 - Receives Pub/Sub messages, checks dedup, atomically stores candidate + outbox event
 - Dedup: composite unique constraint `(source, source_ref_id)` + transaction-scoped check
-- Scales on demand
+- Scales on demand (WIP)
 
 **3. Outbox Poller** - Event publishing (1 replica, no scaling)
 
 - Polls unpublished outbox events every 5s (batch 10)
-- Row-level locks (SELECT FOR UPDATE) prevent concurrent processing
 - Publishes via CandidateProcessor.Notify()
 - Single instance guarantees ordered delivery
 
@@ -120,12 +134,11 @@ Per-IP rate limiting on webhook endpoint.
 JSON logging with correlation IDs throughout pipeline.
 
 - Logrus with RFC3339 timestamps
-- Correlation ID: `idempotency_key` flows through API → Pub/Sub → Worker
 - Log levels configurable (env: `LOG_LEVEL`)
 
 ### 9. **Observability**
 
-Metrics endpoint for monitoring.
+Metrics endpoint for monitoring. Not realistic, but just for here for demo purposes.
 
 - `GET /metrics` - Returns counters for webhooks, outbox, notifications
 - Counters: total_request, rate_limited, ingested, rejected, duplicate, outbox_written, etc.
@@ -147,16 +160,13 @@ Metrics endpoint for monitoring.
 │   ├── api/
 │   │   └── main.go                 # API service: webhook ingestion + Pub/Sub publish
 │   ├── worker/
-│   │   └── main.go                 # Worker service: message processing + dedup
-│   ├── outbox-poller/
-│   │   └── main.go                 # Outbox poller: event publishing
+│   │   └── main.go                 # Worker service: Pub/Sub message processing
+│   ├── poller/
+│   │   └── main.go                 # Poller: event publishing
 │   └── scheduler/
-│       └── main.go                 # Scheduler: maintenance jobs
+│       └── main.go                 # Scheduler: maintenance & cleanup jobs
 ├── internal/
-│   ├── app/
-│   │   └── app.go                  # DI for API
-│   ├── config/
-│   │   └── config.go               # Config loader
+│   ├── config/                     # Config loader
 │   ├── di/
 │   │   ├── api.go                  # API DI
 │   │   ├── worker.go               # Worker DI
@@ -164,33 +174,11 @@ Metrics endpoint for monitoring.
 │   │   └── outbox_poller.go        # Outbox poller DI
 │   ├── domain/
 │   │   ├── model/                  # Entities
-│   │   ├── repo/                   # Interfaces
+│   │   ├── repo/                   # Interfaces for repositories
 │   │   └── service/                # Business logic interfaces
-│   ├── infra/
-│   │   ├── http/
-│   │   │   ├── webhooks.go         # Webhook handler
-│   │   │   ├── metrics.go          # Metrics handler
-│   │   │   └── ratelimit.go        # Rate limiter middleware
-│   │   ├── logger/
-│   │   │   └── logger.go           # Logrus factory
-│   │   ├── postgres/
-│   │   │   ├── db.go               # DB connection + transaction
-│   │   │   ├── candidate.go        # Candidate repository
-│   │   │   ├── outbox.go           # Outbox repository
-│   │   │   └── metrics.go          # Metrics repository
-│   │   └── pubsub/
-│   │       └── client.go           # GCP Pub/Sub wrapper
-│   └── usecase/
-│       ├── candidate/
-│       │   ├── ingestion/          # API ingestion logic
-│       │   └── processing/         # Worker processing logic
-│       ├── cleanup/                # Scheduler cleanup logic
-│       └── metrics/                # Metrics collection
-├── migrations/
-│   ├── 001_init.sql                # Schema: applications, outbox
-│   ├── 002_metrics.sql             # Metrics table
-│   ├── 003_fix_dedup_constraint.sql # Composite unique(source, source_ref_id)
-│   └── 004_add_duplicate_metric.sql # Duplicate counter
+│   ├── infra/                      # Infrastructure specific implementations. (http, postgres, etc.)
+│   └── usecase/                    # Business rules and logic
+├── migrations/                     # Contains all sql migrations
 ├── k8s/
 │   ├── api.yaml                    # API deployment + service
 │   ├── worker.yaml                 # Worker deployment
@@ -352,16 +340,16 @@ Metrics endpoint. Returns counters for entire pipeline.
 
 ## Resilience Features
 
-### Request Lifecycle
+### API Lifecycle
 
-1. **Validation**: Parse payload via strategy, validate schema
+1. **Validation**: Parse payload via parsing strategy, validate schema
 2. **Publish**: Fire to Pub/Sub with circuit breaker protection (fire-and-forget, 5s timeout)
 3. **Return**: 202 Accepted (does not wait for worker)
 
 ### Worker Lifecycle
 
 1. **Receive**: Pull message from Pub/Sub subscription
-2. **Acquire Slot**: Wait for semaphore (max 10 concurrent)
+2. **Acquire Slot**: Wait for semaphore (default max 10 concurrent)
 3. **Dedup Check**: Query candidate_applications within transaction (source + source_ref_id)
 4. **Transactional Persist**: Atomic INSERT candidate + INSERT outbox_event (single transaction)
    - If duplicate detected: log as info, increment `webhooks_duplicate`, return nil (no metrics written)
@@ -369,18 +357,17 @@ Metrics endpoint. Returns counters for entire pipeline.
 5. **ACK**: Message acknowledged to broker (on success or dedup)
 6. **NAK**: Message nacked on error (will be redelivered)
 
-### Outbox Poller Lifecycle
+### Poller Lifecycle
 
 1. **Poll**: Every 5 seconds, fetch unpublished outbox events (batch 10)
-2. **Row Lock**: Use SELECT FOR UPDATE to prevent concurrent processing
-3. **Notify**: Call CandidateProcessor.Notify() for each event
-4. **Mark Published**: Update outbox_events.published = true
-5. **Retry**: On failure, logs warning, will retry next poll (eventual consistency)
+2. **Notify**: Call CandidateProcessor.Notify() for each event
+3. **Mark Published**: Update outbox_events.published = true
+4. **Retry**: On failure, logs warning, will retry next poll (eventual consistency)
 
 ### Scheduler Lifecycle
 
 1. **Run**: Triggered by CronJob every day at 2 AM (Singapore time)
-2. **Cleanup**: Delete outbox_events where created_at < NOW() - OUTBOX_RETENTION_DAYS
+2. **Cleanup**: Delete outbox_events where created_at < NOW() - OUTBOX_RETENTION_TIME_S
 3. **Metrics**: Increment `outbox_cleaned` counter
 4. **Exit**: Job complete, waits for next scheduled run
 
@@ -419,7 +406,7 @@ WORKER_POOL_SIZE=10
 MESSAGE_TIMEOUT_S=30
 
 # Scheduler
-OUTBOX_RETENTION_DAYS=30
+OUTBOX_RETENTION_TIME_S=30
 SCHEDULER_CLEANUP_HOUR=2  # 2 AM Singapore time
 
 # Circuit Breaker

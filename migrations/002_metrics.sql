@@ -15,5 +15,6 @@ INSERT INTO metrics (metric_name, value) VALUES
   ('outbox_publish_success', 0),
   ('outbox_publish_failed', 0),
   ('notification_failed', 0),
-  ('outbox_cleaned', 0)
+  ('outbox_cleaned', 0),
+  ('webhooks_duplicate', 0)
 ON CONFLICT (metric_name) DO NOTHING;
