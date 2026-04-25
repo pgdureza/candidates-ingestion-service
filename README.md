@@ -20,7 +20,7 @@ API endpoint immediately acknowledges webhook (202 Accepted). No database writes
 ### 3. **Transactional Outbox**
 Reliable message processing with at-least-once semantics.
 - Worker receives Pub/Sub message
-- Single atomic transaction: `INSERT application + INSERT outbox_event`
+- Single atomic transaction: `INSERT candidate + INSERT outbox_event`
 - Database guarantees atomicity
 - Separate process publishes outbox events to downstream
 
@@ -41,10 +41,10 @@ Fast-fail on downstream failures.
 
 ### 6. **Idempotency**
 Handles "at-least-once" delivery from broker.
-- Client provides `Idempotency-Key` header (or auto-generated UUID)
-- Check before processing: if already seen, return cached response
-- Store key + app ID before publishing to broker
-- Worker double-checks before persisting
+- Database constraint: unique (source, source_ref_id)
+- Worker dedup check: SELECT candidate_applications before INSERT
+- If duplicate detected: skip processing, ACK message
+- Guarantees: No duplicate applications in database
 
 ## Tech Stack
 
@@ -75,8 +75,7 @@ Handles "at-least-once" delivery from broker.
 │   ├── infra/
 │   │   ├── db/
 │   │   │   ├── db.go
-│   │   │   ├── application.go # Transactional outbox
-│   │   │   └── idempotency_test.go
+│   │   │   └── application.go # Transactional outbox
 │   │   └── pubsub/
 │   │       └── client.go      # GCP Pub/Sub wrapper
 │   └── worker/
@@ -106,7 +105,6 @@ make run
 # Or test via Docker Compose
 curl -X POST http://localhost:8080/webhooks/linkedin \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: test-123" \
   -d '{
     "id": "abc123",
     "firstName": "John",
@@ -162,9 +160,6 @@ make k8s-delete
 
 Ingests webhook from source (linkedin, google_forms).
 
-**Headers:**
-- `Idempotency-Key` (optional, UUID auto-generated): Idempotency token
-
 **Response (202 Accepted):**
 ```json
 {
@@ -193,16 +188,14 @@ Health check endpoint.
 ### Request Lifecycle
 
 1. **Validation**: Parse payload via strategy, validate schema
-2. **Idempotency**: Check if request ID already processed (cache hit = return immediately)
-3. **Store Key**: Insert idempotency key before publishing (ensures "at least once")
-4. **Publish**: Fire to Pub/Sub with circuit breaker protection (fire-and-forget, 5s timeout)
-5. **Return**: 202 Accepted (does not wait for worker)
+2. **Publish**: Fire to Pub/Sub with circuit breaker protection (fire-and-forget, 5s timeout)
+3. **Return**: 202 Accepted (does not wait for worker)
 
 ### Worker Lifecycle
 
 1. **Receive**: Pull message from subscription
 2. **Acquire Slot**: Wait for semaphore (max 10 concurrent)
-3. **Idempotency Check**: Verify not already processed (double-check)
+3. **Dedup Check**: Query candidate_applications (source + source_ref_id)
 4. **Transactional Persist**: Atomic INSERT application + INSERT outbox (single transaction)
 5. **Mark Published**: Update outbox_events.published flag
 6. **ACK**: Message acknowledged to broker
@@ -211,12 +204,12 @@ Health check endpoint.
 
 | Scenario | Handling |
 |----------|----------|
-| Webhook ingestion fails | 400 Bad Request, no idempotency key stored |
+| Webhook ingestion fails | 400 Bad Request |
 | Pub/Sub publish timeout | Logged warning, circuit breaker tracks failure |
 | Pub/Sub unreachable (5+ failures) | Circuit breaker opens, future calls fast-fail |
 | Worker crashes mid-processing | Message redelivered by broker (at-least-once) |
 | DB connection pool exhausted | Blocks worker (semaphore prevents cascading) |
-| Duplicate message from broker | Idempotency check skips duplicate processing |
+| Duplicate message from broker | Dedup check skips duplicate processing |
 
 ## Configuration
 
@@ -250,12 +243,6 @@ PUBSUB_EMULATOR_HOST=localhost:8085  # For local testing
 ### Strategy Pattern Unit Tests
 ```bash
 go test -v ./internal/domain/...
-```
-
-### Idempotency Integration Tests
-```bash
-# Requires local PostgreSQL
-go test -v -run TestIdempotency ./internal/infra/db/...
 ```
 
 ### Load Testing
@@ -295,8 +282,8 @@ SELECT COUNT(*) FROM candidate_applications;
 -- Unpublished outbox events (indicates backlog)
 SELECT COUNT(*) FROM outbox_events WHERE published = false;
 
--- Idempotency hit rate
-SELECT COUNT(*) FROM idempotency_keys;
+-- Recent applications
+SELECT COUNT(*) FROM candidate_applications WHERE created_at > NOW() - INTERVAL '1 hour';
 ```
 
 ## Future Enhancements

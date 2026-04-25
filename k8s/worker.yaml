@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: candidate-ingestion-worker
-  namespace: default
+  namespace: candidate-ingestion-service
   labels:
     app: candidate-ingestion
     component: worker
@@ -28,77 +28,77 @@ spec:
       serviceAccountName: candidate-ingestion
 
       containers:
-      - name: worker
-        image: candidate-ingestion:latest
-        imagePullPolicy: Always
+        - name: worker
+          image: candidate-ingestion:latest
+          imagePullPolicy: Always
 
-        env:
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: candidate-ingestion
-              key: database-url
-        - name: GCP_PROJECT
-          valueFrom:
-            configMapKeyRef:
-              name: candidate-ingestion
-              key: gcp-project
-        - name: PUBSUB_TOPIC
-          valueFrom:
-            configMapKeyRef:
-              name: candidate-ingestion
-              key: pubsub-topic
-        - name: PUBSUB_EMULATOR_HOST
-          valueFrom:
-            configMapKeyRef:
-              name: candidate-ingestion
-              key: pubsub-emulator-host
-              optional: true
-        - name: WORKER_COUNT
-          value: "10"
-        - name: WORKER_TIMEOUT
-          value: "30s"
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: candidate-ingestion
+                  key: database-url
+            - name: GCP_PROJECT
+              valueFrom:
+                configMapKeyRef:
+                  name: candidate-ingestion
+                  key: gcp-project
+            - name: PUBSUB_TOPIC
+              valueFrom:
+                configMapKeyRef:
+                  name: candidate-ingestion
+                  key: pubsub-topic
+            - name: PUBSUB_EMULATOR_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: candidate-ingestion
+                  key: pubsub-emulator-host
+                  optional: true
+            - name: WORKER_COUNT
+              value: "10"
+            - name: WORKER_TIMEOUT
+              value: "30s"
 
-        command: ["./worker"]
+          command: ["./worker"]
 
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "200m"
-          limits:
-            memory: "1Gi"
-            cpu: "1000m"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
 
-        securityContext:
-          runAsNonRoot: true
-          runAsUser: 1000
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop:
-            - ALL
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
 
-        volumeMounts:
-        - name: tmp
-          mountPath: /tmp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
 
       volumes:
-      - name: tmp
-        emptyDir: {}
+        - name: tmp
+          emptyDir: {}
 
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            podAffinityTerm:
-              labelSelector:
-                matchExpressions:
-                - key: app
-                  operator: In
-                  values:
-                  - candidate-ingestion
-                - key: component
-                  operator: In
-                  values:
-                  - worker
-              topologyKey: kubernetes.io/hostname
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - candidate-ingestion
+                    - key: component
+                      operator: In
+                      values:
+                        - worker
+                topologyKey: kubernetes.io/hostname

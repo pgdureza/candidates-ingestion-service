@@ -5,19 +5,18 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
 	"github.com/candidate-ingestion/service/internal/domain/service"
 )
 
 type WebhookHandler struct {
-	svc service.ApplicationIngester
-	log *logrus.Logger
+	svc    service.CandidateIngester
+	logger service.Logger
 }
 
-func NewWebhookHandler(svc service.ApplicationIngester, log *logrus.Logger) *WebhookHandler {
-	return &WebhookHandler{svc: svc, log: log}
+func NewWebhookHandler(svc service.CandidateIngester, logger service.Logger) *WebhookHandler {
+	return &WebhookHandler{svc: svc, logger: logger}
 }
 
 // HandleWebhook dispatches to appropriate strategy
@@ -25,41 +24,34 @@ func NewWebhookHandler(svc service.ApplicationIngester, log *logrus.Logger) *Web
 func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source") // Chi v5.0.12+
 	if source == "" {
-		h.log.WithField("path", r.URL.Path).Warn("webhook received with missing source")
+		h.logger.WithField("path", r.URL.Path).Warn("webhook received with missing source")
 		http.Error(w, "source required", http.StatusBadRequest)
 		return
 	}
 
-	// Idempotency key from header
-	idempotencyKey := r.Header.Get("Idempotency-Key")
-	if idempotencyKey == "" {
-		idempotencyKey = uuid.New().String()
-	}
-
 	// Create request-scoped logger with correlation fields
-	reqLog := h.log.WithFields(logrus.Fields{
-		"source":          source,
-		"idempotency_key": idempotencyKey,
+	logger := h.logger.WithFields(logrus.Fields{
+		"source": source,
 	})
-	reqLog.Info("webhook received")
+	logger.Info("webhook received")
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		reqLog.WithError(err).Warn("failed to read request body")
+		logger.WithError(err).Warn("failed to read request body")
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
 
 	// Parse and queue
-	appID, err := h.svc.Ingest(r.Context(), source, idempotencyKey, body, reqLog)
+	appID, err := h.svc.Ingest(r.Context(), source, body)
 	if err != nil {
-		reqLog.WithError(err).Warn("webhook ingestion failed")
+		logger.WithError(err).Warn("webhook ingestion failed")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	reqLog.WithField("app_id", appID).Info("webhook accepted, published to pubsub")
+	logger.WithField("app_id", appID).Info("webhook accepted, published to pubsub")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{

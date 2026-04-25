@@ -43,7 +43,7 @@ func TestCircuitBreakerFastFailWhenOpen(t *testing.T) {
 	// Next call should fast-fail
 	err := cb.Execute(func() error { return nil })
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "circuit breaker open")
+	assert.Contains(t, err.Error(), "state is open")
 }
 
 func TestCircuitBreakerHalfOpenTransition(t *testing.T) {

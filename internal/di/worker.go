@@ -4,21 +4,24 @@ import (
 	"context"
 
 	"github.com/candidate-ingestion/service/internal/config"
-	"github.com/candidate-ingestion/service/internal/infra/db"
 	"github.com/candidate-ingestion/service/internal/infra/logger"
+	"github.com/candidate-ingestion/service/internal/infra/postgres"
 	"github.com/candidate-ingestion/service/internal/infra/pubsub"
-	"github.com/candidate-ingestion/service/internal/infra/worker"
+	"github.com/candidate-ingestion/service/internal/usecase/candidate/processing"
+	"github.com/candidate-ingestion/service/internal/usecase/unrealiable"
 )
 
-type WorkerContainer struct {
-	Pool     *worker.Pool
-	Database *db.DB
-	PubSub   *pubsub.Client
-	Config   *config.Config
+type Worker struct {
+	Database   *postgres.DB
+	PubSubPool *pubsub.PubSubPool
+	PubSub     *pubsub.Client
+	Config     *config.Config
 }
 
-func NewWorker(ctx context.Context, cfg *config.Config) (*WorkerContainer, error) {
-	database, err := db.New(cfg.DatabaseURL)
+func NewWorker(ctx context.Context, cfg *config.Config) (*Worker, error) {
+	logger := logger.New(cfg.LogLevel)
+
+	database, err := postgres.New(cfg.DatabaseURL, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -29,13 +32,14 @@ func NewWorker(ctx context.Context, cfg *config.Config) (*WorkerContainer, error
 		return nil, err
 	}
 
-	log := logger.New(cfg.LogLevel)
-	pool := worker.NewPool(cfg.WorkerCount, cfg.WorkerTimeout, database, ps, log)
+	notifier := unrealiable.NewUnreliableNotifier()
+	candidateProcessor := processing.NewCandidateProcesor(database, logger, notifier, cfg.OutboxBatchSize)
+	pubSubPool := pubsub.NewPubSubPool(candidateProcessor, cfg.WorkerCount, cfg.WorkerTimeout, ps, logger)
 
-	return &WorkerContainer{
-		Pool:     pool,
-		Database: database,
-		PubSub:   ps,
-		Config:   cfg,
+	return &Worker{
+		PubSubPool: pubSubPool,
+		Database:   database,
+		PubSub:     ps,
+		Config:     cfg,
 	}, nil
 }

@@ -1,10 +1,10 @@
-.PHONY: up down api worker test lint stress-test trigger-failure k8s-deploy k8s-delete help
+.PHONY: up down api worker scheduler poller test lint stress-test trigger-failure k8s-deploy k8s-delete help
 
 # Variables
 DOCKER_IMAGE ?= candidate-ingestion:latest
 DOCKER_COMPOSE_FILE ?= docker-compose.yml
-KUBE_NAMESPACE ?= default
-STRESS_TEST_DURATION ?= 60
+KUBE_NAMESPACE ?= candidate-ingestion-service
+STRESS_TEST_DURATION ?= 3
 STRESS_TEST_CONCURRENCY ?= 50
 
 help:
@@ -14,6 +14,8 @@ help:
 	@echo "  make down               Stop all services"
 	@echo "  make api                Run API server locally (go run ./cmd/api)"
 	@echo "  make worker             Run worker locally (go run ./cmd/worker)"
+	@echo "  make scheduler          Run scheduler locally (go run ./cmd/scheduler)"
+	@echo "  make poller             Run outbox poller locally (go run ./cmd/poller)"
 	@echo "  make test               Run unit tests"
 	@echo "  make lint               Run linter"
 	@echo "  make stress-test        Simulate traffic spike"
@@ -25,7 +27,7 @@ help:
 # Docker Compose Commands
 up-deps:
 	@echo "Starting PostgreSQL and PubSub emulator..."
-	docker-compose -f $(DOCKER_COMPOSE_FILE) up -d postgres pubsub-emulator
+	docker-compose -f $(DOCKER_COMPOSE_FILE) up -d postgres pubsub-emulator pubsub-ui
 	@echo "Waiting for services to be healthy..."
 	@sleep 3
 	docker-compose -f $(DOCKER_COMPOSE_FILE) exec -T postgres psql -U user -d candidates -c "SELECT 1"
@@ -33,7 +35,7 @@ up-deps:
 
 up:
 	@echo "Starting full stack..."
-	docker-compose -f $(DOCKER_COMPOSE_FILE) up -d
+	docker-compose -f $(DOCKER_COMPOSE_FILE) up
 	@echo "Waiting for services to be healthy..."
 	@sleep 5
 	docker-compose -f $(DOCKER_COMPOSE_FILE) exec -T postgres psql -U user -d candidates -c "SELECT 1"
@@ -99,14 +101,17 @@ k8s-deploy:
 	kubectl apply -f k8s/shared.yaml -n $(KUBE_NAMESPACE)
 	kubectl apply -f k8s/api.yaml -n $(KUBE_NAMESPACE)
 	kubectl apply -f k8s/worker.yaml -n $(KUBE_NAMESPACE)
+	kubectl apply -f k8s/poller.yaml -n $(KUBE_NAMESPACE)
+	kubectl apply -f k8s/scheduler.yaml -n $(KUBE_NAMESPACE)
 	kubectl apply -f k8s/hpa.yaml -n $(KUBE_NAMESPACE)
 	@echo "Deployment complete. Check status with:"
 	@echo "  kubectl get pods -n $(KUBE_NAMESPACE)"
 	@echo "  kubectl get hpa -n $(KUBE_NAMESPACE)"
+	@echo "  kubectl get cronjob -n $(KUBE_NAMESPACE)"
 
 k8s-delete:
 	@echo "Deleting Kubernetes resources..."
-	kubectl delete -f k8s/shared.yaml -f k8s/api.yaml -f k8s/worker.yaml -f k8s/hpa.yaml -n $(KUBE_NAMESPACE) --ignore-not-found
+	kubectl delete -f k8s/shared.yaml -f k8s/api.yaml -f k8s/worker.yaml -f k8s/poller.yaml -f k8s/scheduler.yaml -f k8s/hpa.yaml -n $(KUBE_NAMESPACE) --ignore-not-found
 
 k8s-logs:
 	kubectl logs -f deployment/candidate-ingestion-service -n $(KUBE_NAMESPACE)
@@ -120,6 +125,12 @@ api:
 
 worker:
 	go run ./cmd/worker
+
+scheduler:
+	go run ./cmd/scheduler
+
+poller:
+	go run ./cmd/poller
 
 dev-setup:
 	go mod download

@@ -19,6 +19,7 @@ type CircuitBreaker struct {
 	halfOpenTimeout  time.Duration
 	lastFailTime     time.Time
 	successCount     int // for half-open state
+	logger           service.Logger
 }
 
 const (

@@ -15,21 +15,21 @@ import (
 
 func main() {
 	cfg := config.Load()
-	log := logger.New(cfg.LogLevel)
+	logger := logger.New(cfg.LogLevel)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	container, err := di.NewAPI(ctx, cfg)
+	api, err := di.NewAPI(ctx, cfg)
 	if err != nil {
-		log.Fatalf("Failed to build API: %v", err)
+		logger.Fatalf("Failed to build API: %v", err)
 	}
-	defer container.Database.Close()
-	defer container.PubSub.Close()
+	defer api.Database.Close()
+	defer api.PubSub.Close()
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.APIPort,
-		Handler:      container.Api.Router(),
+		Handler:      api.Router,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -40,20 +40,20 @@ func main() {
 
 	go func() {
 		<-sigChan
-		log.Info("Shutdown signal received")
+		logger.Info("Shutdown signal received")
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer shutdownCancel()
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.WithError(err).Error("Shutdown error")
+			logger.WithError(err).Error("Shutdown error")
 		}
 		cancel()
 	}()
 
-	log.WithField("port", cfg.APIPort).Info("Starting API")
+	logger.WithField("port", cfg.APIPort).Info("Starting API")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Server error: %v", err)
+		logger.Fatalf("Server error: %v", err)
 	}
 
-	log.Info("Shutdown complete")
+	logger.Info("Shutdown complete")
 }

@@ -13,21 +13,22 @@ import (
 
 func main() {
 	cfg := config.Load()
-	log := logger.New(cfg.LogLevel)
+	logger := logger.New(cfg.LogLevel)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	container, err := di.NewWorker(ctx, cfg)
+	worker, err := di.NewWorker(ctx, cfg)
 	if err != nil {
-		log.Fatalf("Failed to build worker: %v", err)
+		logger.Fatalf("Failed to build worker: %v", err)
 	}
-	defer container.Database.Close()
-	defer container.PubSub.Close()
+	defer worker.Database.Close()
+	defer worker.PubSub.Close()
 
+	// Start message processor
 	go func() {
-		if err := container.Pool.Start(ctx, cfg.GCPProject, cfg.PubSubTopic); err != nil {
-			log.WithError(err).Error("Worker pool error")
+		if err := worker.PubSubPool.Start(ctx, cfg.GCPProject, cfg.PubSubTopic); err != nil {
+			logger.WithError(err).Error("Worker pool error")
 		}
 	}()
 
@@ -35,9 +36,9 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigChan
-	log.Info("Shutdown signal received")
-	container.Pool.Stop()
+	logger.Info("Shutdown signal received")
+	worker.PubSubPool.Stop()
 	cancel()
 
-	log.Info("Shutdown complete")
+	logger.Info("Shutdown complete")
 }

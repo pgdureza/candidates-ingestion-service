@@ -7,7 +7,11 @@ import (
 	"time"
 
 	"cloud.google.com/go/pubsub"
+
+	"github.com/candidate-ingestion/service/internal/domain/service"
 )
+
+var _ service.Publisher = new(Client)
 
 type Client struct {
 	client *pubsub.Client
@@ -43,9 +47,6 @@ func (c *Client) PublishJSON(ctx context.Context, topic string, msg []byte) erro
 
 	result := t.Publish(ctx, &pubsub.Message{
 		Data: msg,
-		Attributes: map[string]string{
-			"source": "webhook-service",
-		},
 	})
 
 	_, err = result.Get(ctx)

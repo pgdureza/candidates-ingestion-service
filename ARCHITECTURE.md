@@ -1,235 +1,674 @@
-# Architecture Overview
+# Candidate Ingestion Service Architecture
 
-## System Diagram
+## Overview
+
+Event-driven microservice for ingesting candidate applications from multiple sources (LinkedIn, Google Forms, etc.) with transactional reliability and idempotent processing.
 
 ```
-┌─────────────┐
-│   Webhook   │
-│  Clients    │
-│ (LinkedIn,  │
-│ Google)     │
-└──────┬──────┘
-       │ HTTP POST /webhooks/{source}
-       │ (202 Accepted, Fast Return)
-       ▼
-┌──────────────────────────────────────┐
-│          API Server (Chi)            │
-├──────────────────────────────────────┤
-│ • Parse Payload (Strategy Pattern)   │
-│ • Validate & Normalize              │
-│ • Check Idempotency Key             │
-│ • Store Idempotency (DB)            │
-│ • Publish to Pub/Sub                │
-│   (Circuit Breaker Protection)      │
-│ • Return 202 Accepted               │
-└──────────┬─────────────┬────────────┘
-           │             │
-        (DB)           (Pub/Sub)
-           │             │
-           ▼             ▼
-┌──────────────────┐  ┌──────────────────────┐
-│   PostgreSQL     │  │  GCP Pub/Sub Emulator│
-│                  │  │                      │
-│ Tables:          │  │ Topic:               │
-│ • Applications   │  │ candidate-applications
-│ • Outbox Events  │  │                      │
-│ • Idempotency    │  │ Subscription:        │
-│   Keys           │  │ candidate-apps-sub   │
-└────────┬─────────┘  └──────────┬───────────┘
-         ▲                       │
-         │                       │ (Async Pull)
-         │                       ▼
-         │            ┌──────────────────────┐
-         │            │   Worker Pool        │
-         │            ├──────────────────────┤
-         │            │ • Semaphore (N=10)   │
-         │            │ • Dequeue Message    │
-         │            │ • Double-Check       │
-         │            │   Idempotency        │
-         │            │ • Process & Normalize│
-         │            │ • TX: Store App +    │
-         │            │   Outbox Event       │
-         │            │ • Mark Published     │
-         │            │ • ACK Message        │
-         │            └──────────┬───────────┘
-         │                       │
-         └───────────────────────┘
-            (Atomic Transaction)
+┌──────────────────────────────────────────────────────────────┐
+│                     External Sources                         │
+│              (LinkedIn, Google Forms, etc.)                  │
+└────────────────────────┬─────────────────────────────────────┘
+                         │ webhooks
+                         ▼
+┌──────────────────────────────────────────────────────────────┐
+│                      API Service (1-5)                       │
+│  POST /webhooks/{source}                                     │
+│  • Validates payload + injects idempotency key               │
+│  • Publishes to Pub/Sub (circuit breaker + timeout)          │
+│  • Returns 202 Accepted (non-blocking)                       │
+└────────────────┬─────────────────────────────────────────────┘
+                 │ publish (at-least-once)
+                 ▼
+          ┌──────────────────┐
+          │   Cloud Pub/Sub   │ (candidate-applications topic)
+          └────────┬─────────┘
+                   │ subscribe (pull)
+                   ▼
+┌──────────────────────────────────────────────────────────────┐
+│           Worker Service (1-10 replicas)                     │
+│  PubSub message handler                                      │
+│  • Validates idempotency key (dedup via DB unique constraint)│
+│  • Stores candidate_application + outbox_event atomically    │
+│  • ACKs message on success, NAKs on failure                  │
+│  • Retries with exponential backoff                          │
+└────────────┬─────────────────────────────────────────────────┘
+             │ atomic write (transaction)
+             ▼
+    ┌─────────────────────┐
+    │   PostgreSQL DB     │
+    ├─────────────────────┤
+    │ candidate_applications
+    │ outbox_events       │ (unpublished)
+    │ candidate_skills    │
+    │ candidate_notes     │
+    └─────────────────────┘
+             ▲
+             │ fetch (SELECT FOR UPDATE)
+             │ mark published (UPDATE)
+             │
+┌────────────┴────────────────────────────────────────────────┐
+│           Outbox Poller Service (1 replica)                 │
+│  Transactional outbox pattern                               │
+│  • Polls unpublished events every X seconds in batches      │
+│  • Notifies external systems (unreliable, async)            │
+│  • Marks published after successful notification            │
+└────────────┬────────────────────────────────────────────────┘
+             │ notify (unreliable)
+             ▼
+    ┌─────────────────────┐
+    │  External Systems   │
+    │ (email, webhooks)   │
+    │ (idempotent)        │
+    └─────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────┐
+│           Scheduler Service (1 replica - CronJob)           │
+│  Maintenance tasks on schedule                              │
+│  • Cleanup: Deletes outbox events older than 30 days        │
+│    (runs daily 2 AM Singapore time)                         │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Request Flow
+## Services
 
-### Phase 1: Webhook Ingestion (Synchronous, SLA Protected)
+### 1. API Service (`cmd/api/main.go`)
 
-1. **Client** sends webhook to `POST /webhooks/{source}` with `Idempotency-Key` header
-2. **API Handler** extracts source & payload
-3. **Strategy Factory** selects appropriate strategy (LinkedIn, Google Forms)
-4. **Strategy.Parse()** normalizes payload into `CandidateApplication`
-5. **Idempotency Check**: Query `idempotency_keys` table
-   - Cache hit? Return 202 + cached app ID
-   - Cache miss? Continue
-6. **Store Idempotency**: INSERT `idempotency_keys` (request_id → app_id)
-7. **Generate ID**: Create UUID for application
-8. **Publish to Pub/Sub** with Circuit Breaker:
-   - Attempt to publish message (5s timeout)
-   - If success: increment success counter, reset failure counter
-   - If timeout/error: increment failure counter
-   - If 5 failures: open circuit, fast-fail future calls
-   - Half-open state: allow trial requests, close after 3 successes
-9. **Return 202 Accepted** immediately (does not wait for worker)
+**Purpose:** Webhook ingestion endpoint
+**Replicas:** 1-5 (scales on CPU/Memory)
+**Responsibility:**
 
-### Phase 2: Background Processing (Asynchronous, At-Least-Once)
+- Accept webhooks from external sources
+- Validate payload structure + extract source ID
+- Inject idempotency key into Pub/Sub message
+- Publish to Cloud Pub/Sub (with circuit breaker protection)
+- Return 202 Accepted immediately (non-blocking)
 
-1. **Worker Pool** starts, initializes semaphore with 10 slots
-2. **Subscription Receive Loop** pulls messages from Pub/Sub
-3. For each message:
-   a. **Acquire Semaphore Slot** (block if all 10 in use → bulkhead protection)
-   b. **Extract Idempotency Key** from message
-   c. **Idempotency Double-Check**: SELECT from `idempotency_keys`
-      - If exists: log duplicate, skip processing, ACK
-      - If new: continue
-   d. **Reconstruct Application** from message JSON
-   e. **Begin Transaction**: Start SQL TX
-   f. **Insert Application**: INSERT into `candidate_applications`
-   g. **Create Outbox Event**: INSERT into `outbox_events` (same TX)
-   h. **Commit Transaction**: Atomic write
-   i. **Mark Published**: UPDATE outbox_events.published = true
-   j. **ACK Message**: Tell Pub/Sub message was processed
-   k. **Release Semaphore Slot**: Other workers can proceed
+**Key files:**
 
-## Failure Scenarios & Recovery
+- `internal/infra/http/webhooks.go` - HTTP handler
+- `internal/service/webhook.go` - Business logic (publish + logging)
+- `internal/app/app.go` - App container
+- `internal/di/api.go` - Dependency injection
 
-### Scenario 1: Network Partition (Webhook → Pub/Sub)
-- API publishes with 5s timeout
-- Circuit breaker catches error, increments failure counter
-- After 5 failures: circuit opens, future calls fast-fail (no retry, immediate error response)
-- Client sees no change (API still returns 202, retries later)
-- Idempotency key stored in DB acts as safety net
-- When Pub/Sub recovers: circuit transitions to half-open, trial call succeeds, closes
+**Reliability:**
 
-### Scenario 2: Database Overload (Worker → DB)
-- Worker goroutine blocks on DB connection pool
-- Semaphore slots accumulate (up to 10)
-- When 10 slots full: Pub/Sub delivery pauses (backpressure)
-- DB bottleneck resolved → workers flush backlog
-- No message loss (ack only after successful DB insert)
+- Circuit breaker on Pub/Sub publish (fails open, returns app_id)
+- Timeout protection (30 seconds)
+- Structured JSON logging with idempotency key for tracing
 
-### Scenario 3: Worker Crash
-- Message in-flight processing stops
-- Pub/Sub subscription timeout (AckDeadline = 60s)
-- Message redelivered to another worker
-- Idempotency double-check: skip duplicate
-- No data loss, automatic retry
+### 2. Worker Service (`cmd/worker/main.go`)
 
-### Scenario 4: Duplicate Webhook (Idempotent Clients)
-- Client sends same webhook twice with same `Idempotency-Key`
-- API Phase 1: Second request hits cache, returns same app ID (no re-publish)
-- No duplicate message in Pub/Sub
-- Clean idempotency at API boundary
+**Purpose:** Process messages from Pub/Sub
+**Replicas:** 1-10 (scales on CPU/Memory)
+**Responsibility:**
 
-### Scenario 5: Webhook Lost in Transit
-- Client sees timeout/error
-- Client retries with new request (new ID or same key depending on implementation)
-- If same key: API cache hit, returns app ID
-- If new key: Different application created (acceptable, user intended to retry)
+- Subscribe to Cloud Pub/Sub topic
+- Validate idempotency key (dedup check)
+- Reconstruct candidate application from message payload
+- Store atomically: candidate_application + outbox_event in single transaction
+- ACK message on success, NAK on failure
 
-## Data Consistency Guarantees
+**Key files:**
 
-### Transactional Outbox Property
+- `internal/infra/pubsub/pool.go` - Worker pool + message handler
+- `internal/infra/pubsub/client.go` - Pub/Sub subscription
+- `internal/usecase/candidate/processing/pool.go` - Message processing logic
+- `internal/di/worker.go` - Dependency injection
+
+**Deduplication:**
+
+- Worker checks `candidate_applications.Exists(source, source_ref_id)` before insert
+- DB unique constraint on `(source, source_ref_id)` prevents duplicates
+- At-most-once semantics per unique application
+
+**Transaction Pattern:**
+
+```go
+db.WithTransaction(ctx, func(txCtx context.Context) error {
+    // Both operations atomic
+    db.Applications().Store(txCtx, app)
+    db.Outbox().Create(txCtx, outbox)
+    return nil // commits both or neither
+})
 ```
-TX {
-  INSERT candidate_applications (id, source, source_ref_id, ...)
-  INSERT outbox_events (application_id, event_type, payload, published=false)
-} COMMIT
+
+**Logging:**
+
+- All stages logged with idempotency_key + message_id
+- Structured JSON output for observability
+- Duplicate hits logged as INFO (not errors)
+
+### 3. Outbox Poller Service (`cmd/poller/main.go`)
+
+**Purpose:** Reliable notification delivery (transactional outbox pattern)
+**Replicas:** 1 (single instance, no scaling)
+**Responsibility:**
+
+- Poll unpublished outbox events every 5 seconds
+- Fetch in batches (10 events) with row-level locks
+- Notify external systems (email, webhooks, etc.)
+- Mark as published only after successful notification
+- Retry on failure (next poll cycle)
+
+**Key files:**
+
+- `internal/infra/poller/poller.go` - Polling loop + notification orchestration
+- `internal/usecase/candidate/processing/notify.go` - Notification logic
+- `internal/infra/postgres/outbox.go` - Outbox queries (GetUnpublishedForUpdate)
+- `internal/di/poller.go` - Dependency injection
+
+**Concurrency Safety:**
+
+- Single replica guarantees exactly one poller instance
+- Row-level locking (`SELECT FOR UPDATE`) prevents race conditions
+- Transaction extended through fetch only (not notification)
+- Locks released immediately after batch fetch
+
+**Failure Handling:**
+
+- Notify failure: logged as WARN, event remains unpublished, retried next cycle
+- Mark failure: logged as WARN, non-fatal (eventual consistency)
+- Poller graceful shutdown: stops polling, in-flight notifications complete
+
+**Notification Contract:**
+
+- Assumes notifier is unreliable (can fail, timeout, hang)
+- Assumes downstream consumers are idempotent
+- Guarantees at-least-once delivery (retry on failure)
+
+### 4. Scheduler Service (`cmd/scheduler/main.go`)
+
+**Purpose:** Maintenance jobs on schedule
+**Replicas:** 1 (CronJob, not Deployment)
+**Responsibility:**
+
+- Run cleanup job daily at 2 AM Singapore time
+- Delete outbox events older than retention period (default 30 days)
+
+**Key files:**
+
+- `internal/usecase/cleanup/cleaner.go` - Cleanup logic
+- `internal/di/scheduler.go` - Dependency injection
+
+**Cron Expression:** `0 2 * * *` (2 AM daily, Singapore timezone)
+
+---
+
+## Data Flow
+
+### Ingestion Flow (API → Worker)
+
 ```
-- Both succeed atomically or both roll back
-- Even if worker crashes after INSERT application, outbox event exists in DB
-- Separate process can query unpublished events and retry
-- Guarantees: No orphaned applications without outbox, no double-processing
-
-### Idempotency Property
-- Idempotency key stored BEFORE Pub/Sub publish
-- If Pub/Sub fails but DB succeeds: key + app exist, duplicate publish is rejected
-- If DB fails but Pub/Sub succeeds: key missing, message redelivered, reprocessed
-- Idempotency double-check in worker prevents duplicate inserts
-
-## Concurrency & Resource Limits
-
-### Bulkhead (Semaphore)
-- Slots: 10 concurrent workers
-- Each message acquisition requires 1 slot
-- Blocks if all 10 in use
-- Prevents goroutine explosion (safeguards against resource exhaustion)
-
-### Database Pool
-- Max open: 25 connections
-- Max idle: 5 connections
-- Prevents connection leaks, ensures resource fairness
-
-### Circuit Breaker
-- Fail threshold: 5 consecutive failures
-- Open timeout: 60s (wait before trying half-open)
-- Half-open success threshold: 3 successes to close
-- Prevents cascading failures to downstream Pub/Sub
-
-## Scalability Patterns
-
-### Kubernetes HPA
-```yaml
-minReplicas: 2
-maxReplicas: 10
-metrics:
-  - CPU: 70%
-  - Memory: 80%
-scaleUp: aggressive (100% increase per 30s)
-scaleDown: conservative (50% decrease per 60s)
+1. POST /webhooks/linkedin
+   ↓ (validate + inject idempotency key)
+2. Publish to Pub/Sub (non-blocking, returns 202 + app_id)
+   ↓ (at-least-once delivery)
+3. Worker receives message
+   ↓ (check idempotency_key)
+4. Query: SELECT ... FROM candidate_applications WHERE source='linkedin' AND source_ref_id=?
+   ├─ If exists: skip, log duplicate, ACK message
+   └─ If new: proceed
+   ↓ (start transaction)
+5. INSERT candidate_application + INSERT outbox_event (atomic)
+   ↓ (commit transaction)
+6. ACK message
+   └─ Application now queryable, notification pending
 ```
-- As CPU/Memory exceed thresholds, new pods spin up
-- Each pod: 10 worker goroutines
-- Max capacity: 10 pods × 10 workers = 100 concurrent workers
-- Messages distributed via subscription (Pub/Sub handles load balancing)
 
-## Monitoring & Observability
+### Notification Flow (Outbox Poller)
+
+```
+1. Every 5 seconds:
+   ↓
+2. START TRANSACTION
+   ↓
+3. SELECT * FROM outbox_events WHERE published=false LIMIT 10 FOR UPDATE
+   ↓ (acquire exclusive row locks)
+4. COMMIT (release locks)
+   ↓
+5. For each event (outside transaction, unlocked):
+   ├─ Notify external system
+   ├─ On success: Mark event as published
+   └─ On failure: Log, keep unpublished (retry next cycle)
+```
+
+---
+
+## Database Schema
+
+### Key Tables
+
+**candidate_applications**
+
+```sql
+id (UUID)
+source (TEXT) -- 'linkedin', 'google-form'
+source_ref_id (TEXT) -- external ID
+email (TEXT)
+first_name, last_name (TEXT)
+...
+UNIQUE (source, source_ref_id) -- deduplication
+```
+
+**outbox_events**
+
+```sql
+id (UUID)
+event_type (TEXT) -- 'application.created'
+payload (JSONB) -- serialized candidate
+published (BOOLEAN) DEFAULT false
+published_at (TIMESTAMP)
+created_at (TIMESTAMP)
+...
+INDEX (published, created_at) -- for polling query
+```
+
+---
+
+## Failure Scenarios
+
+### API Publishing Fails
+
+- Circuit breaker opens after 5+ consecutive failures
+- Returns 202 Accepted with app_id anyway (non-blocking)
+- Client can query app_id status later
+- Next cycle: circuit breaker half-open attempts recovery
+
+### Worker Message Processing Fails
+
+- NAK message (returns to Pub/Sub)
+- Pub/Sub retries with exponential backoff (default: up to 7 days)
+- Duplicate app_id triggers skip (idempotency), ACK succeeds
+
+### Notification Service Unavailable
+
+- Outbox Poller marks event unpublished
+- Logged as WARN (non-fatal)
+- Retried in next poll cycle (5 seconds later)
+- Eventual consistency: notification delivered when service recovers
+
+### Outbox Poller Crashes
+
+- Pod restarts (Kubernetes)
+- On recovery: fetches pending events again
+- No duplicate notifiers (row-level locks prevent concurrent fetch)
+- Potential double-notify if notification succeeded but mark failed
+  - Mitigated by: downstream idempotency + eventual consistency semantics
+
+---
+
+## Scaling Strategy
+
+### API Service
+
+- **Min:** 1 replica (handle ~100 req/s per instance)
+- **Max:** 5 replicas
+- **Metrics:** CPU 70%, Memory 80%
+- **Scale up:** Instantly on threshold
+- **Scale down:** 5 minutes stabilization
+
+### Worker Service
+
+- **Min:** 1 replica (handle ~1000 msg/s per instance)
+- **Max:** 10 replicas
+- **Metrics:** CPU 70%, Memory 80%
+- **Worker threads:** 10 per instance (configurable)
+- **Message timeout:** 30 seconds per message
+
+### Outbox Poller
+
+- **Replicas:** 1 (single instance, no scaling)
+- **Polling interval:** 5 seconds
+- **Batch size:** 10 events per poll
+- **DB pool:** 5 connections (minimal, mostly idle)
+
+### Scheduler
+
+- **Runs:** CronJob (not continuous)
+- **Schedule:** 2 AM Singapore time daily
+- **Retention:** 30 days (configurable)
+
+---
+
+## Deployment
+
+### Local Development
+
+```bash
+make up                 # Start full stack with Docker Compose
+make api                # Run API locally
+make worker             # Run worker locally
+make poller             # Run poller locally
+make scheduler          # Run scheduler locally (single run)
+```
+
+### Kubernetes
+
+```bash
+make k8s-deploy         # Deploy all services + HPA + CronJob
+make k8s-delete         # Tear down all services
+kubectl get pods        # Check status
+kubectl get hpa         # Check autoscaling
+kubectl get cronjob     # Check scheduler
+```
+
+### Docker
+
+```bash
+docker build -t candidate-ingestion:latest .
+docker run candidate-ingestion:latest ./api
+docker run candidate-ingestion:latest ./worker
+docker run candidate-ingestion:latest ./poller
+docker run candidate-ingestion:latest ./scheduler
+```
+
+---
+
+## Observability
+
+### Structured Logging
+
+- All services log JSON (logrus formatter)
+- RFC3339 timestamps
+- Fields: level, msg, time, error, idempotency_key, message_id, app_id, source, email
 
 ### Key Metrics
-1. **API Layer**
-   - `POST /webhooks/{source}` latency (should be <50ms)
-   - Idempotency cache hit rate
-   - Circuit breaker state transitions
 
-2. **Worker Layer**
-   - Semaphore utilization (% of 10 slots occupied)
-   - Message processing latency (should be <30s)
-   - Error count per source
+- API: request latency, Pub/Sub publish errors (circuit breaker state)
+- Worker: message processing latency, dedup hits, DB write errors
+- Outbox Poller: poll latency, notification errors, batch size
+- Scheduler: cleanup duration, rows deleted
 
-3. **Database**
-   - Connection pool utilization
-   - Unpublished outbox events (backlog indicator)
-   - Idempotency key size
+### Tracing
 
-4. **Pub/Sub**
-   - Message lag (age of oldest unprocessed message)
-   - Subscription push backlog
+- Request flows via idempotency_key: API → Pub/Sub → Worker → (Outbox if needed)
+- Same key in logs enables full lifecycle observability
 
-### Recommended Alerts
-- Unpublished outbox events > 100 (worker lag)
-- Circuit breaker open (Pub/Sub unhealthy)
-- Worker latency > 30s (database slow)
-- Semaphore at 10 (capacity bottleneck)
+---
 
-## Testing Strategy
+## Configuration
 
-### Unit Tests
-- `domain.strategy_test.go`: Webhook parsing strategies
-- `service.circuitbreaker_test.go`: Circuit breaker state machine
-- `infra.db.idempotency_test.go`: Idempotency logic (integration)
+### Environment Variables
 
-### Integration Tests
-- Full flow: webhook ingestion → Pub/Sub → worker → DB
-- Failure injection: network partitions, DB errors, circuit breaker trips
-- Load tests: stress-test command simulates traffic spikes
+```bash
+# Common
+DATABASE_URL=postgresql://user:pass@localhost/candidates
+LOG_LEVEL=info
 
-### Chaos Engineering
-- Kill worker pods → messages redelivered
-- Fill DB connection pool → backpressure observed
-- Trigger circuit breaker → observe fast-fail behavior
+# API
+CIRCUIT_BREAKER_THRESHOLD=5      # failures before opening
+CIRCUIT_BREAKER_TIMEOUT=30s      # recovery wait time
+PUBSUB_PUBLISH_TIMEOUT=30s       # max time to publish
+
+# Worker
+GCP_PROJECT=my-project
+PUBSUB_TOPIC=candidate-applications
+WORKER_COUNT=10                  # goroutines per instance
+WORKER_TIMEOUT=30s               # per-message timeout
+
+# Outbox Poller
+(inherits DATABASE_URL, LOG_LEVEL)
+
+# Scheduler
+OUTBOX_RETENTION_DAYS=30         # cleanup retention
+```
+
+---
+
+## Clean Architecture
+
+Codebase follows **Clean Architecture** principles with strict layer separation and inward dependency flow.
+
+### Layers
+
+**1. Domain Layer** (`internal/domain/`)
+
+Pure business logic. No external dependencies, frameworks, or side effects.
+
+- **Models** (`domain/model/`) - Core entities: `Candidate`, `OutboxEvent`
+- **Repositories** (`domain/repo/`) - Interfaces defining data access contracts (`DB`, `CandidateRepository`, `OutboxRepository`)
+- **Services** (`domain/service/`) - Domain interfaces: `CandidateIngester`, `CandidateParser`, `Publisher`, `CircuitBreaker`, `Logger`
+
+**Key rule:** Domain defines what the system **does**, not **how** it does it. Interfaces are thin, focused, and testable.
+
+Example (`domain/service/candidate.go`):
+
+```go
+type CandidateIngester interface {
+    Ingest(ctx context.Context, source string, payload []byte) (string, error)
+}
+```
+
+**2. Usecase Layer** (`internal/usecase/`)
+
+Application-specific business logic. Orchestrates domain logic, enforces rules, implements workflows.
+
+- **Candidate ingestion** (`usecase/candidate/ingestion/`) - Parse + publish webhook
+- **Candidate processing** (`usecase/candidate/processing/`) - Worker message handling (dedup, store, notify)
+- **Circuit breaker** (`usecase/circuitbreaker/`) - Failure detection + recovery
+- **Cleanup** (`usecase/cleanup/`) - Maintenance jobs (retention policy)
+
+**Import rule:** May only depend on `domain/`. Cannot reference `infra/`.
+
+Example (`usecase/candidate/ingestion/0_init.go`):
+
+```go
+type Ingester struct {
+    db        repo.DB                     // domain interface
+    publisher service.Publisher           // domain interface
+    breaker   service.CircuitBreaker     // domain interface
+    logger    service.Logger              // domain interface
+}
+```
+
+**3. Infrastructure Layer** (`internal/infra/`)
+
+Concrete implementations of domain interfaces. Frameworks, drivers, external service bindings.
+
+- **HTTP** (`infra/http/`) - Web handlers (Chi router)
+- **Postgres** (`infra/postgres/`) - Database implementation
+- **Pub/Sub** (`infra/pubsub/`) - Google Cloud Pub/Sub client
+- **Logger** (`infra/logger/`) - Logrus JSON logging
+- **Poller** (`infra/poller/`) - Outbox polling loop
+- **Parser** - Implicit in usecase (strategies for LinkedIn, Google Forms)
+
+**Import rule:** May import from `domain/` and `usecase/`. Cannot import from other `infra/` packages (except via domain interfaces).
+
+Example (`infra/postgres/candidate.go`): Implements `domain/repo.CandidateRepository` interface.
+
+**4. Dependency Injection** (`internal/di/`)
+
+Wires up all layers. Constructs object graphs for each service (API, Worker, Scheduler, Poller).
+
+**Import rule:** May import from anywhere (`domain/`, `usecase/`, `infra/`, `config/`). Only entry point that knows about all layers.
+
+Example (`di/api.go`):
+
+```go
+func NewAPI(ctx context.Context, cfg *config.Config) (*API, error) {
+    logger := logger.New(cfg.LogLevel)              // infra
+    database, err := postgres.New(cfg.DatabaseURL)  // infra
+    ps, err := pubsub.New(ctx, cfg.GCPProject)      // infra
+
+    cb := circuitbreaker.NewCircuitBreaker(...)     // usecase
+    ingester := candidateingestion.New(             // usecase
+        database, ps, cfg.Topic, cb, logger,
+    )
+
+    handler := apphttp.NewWebhookHandler(           // infra
+        ingester, logger,
+    )
+    // wire routes...
+}
+```
+
+### Dependency Direction
+
+Strict unidirectional dependency flow (inward):
+
+```
+External World
+      ↑ (imports)
+      │
+┌─────┴──────────────────────────────┐
+│  Config + Main (cmd/)              │
+└─────┬──────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────┐
+│  Dependency Injection (di/)         │
+│  Wires domain + usecase + infra     │
+└─────┬──────────────────────────────┘
+      │
+      ├──────────────────┬──────────────────────┐
+      │                  │                      │
+      ▼                  ▼                      ▼
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│   Usecase    │  │  Infra       │  │  Domain      │
+│   (business  │  │  (concrete   │  │  (pure logic)│
+│   workflows) │  │   impl)      │  └──────────────┘
+└──────┬───────┘  └──────┬───────┘       ▲
+       │                 │               │
+       └─────────────────┴───────────────┘
+              (both depend on domain)
+```
+
+**Import rules enforced:**
+
+| Layer   | Can Import      | Cannot Import        |
+| ------- | --------------- | -------------------- |
+| Domain  | Nothing         | (pure, no deps)      |
+| Usecase | Domain          | Infra                |
+| Infra   | Domain, Usecase | Other Infra packages |
+| DI      | Everything      | (wiring layer)       |
+| Main    | DI, Config      | Business logic       |
+
+**Violation detection:**
+
+Run `go vet ./...` and code review to catch imports like:
+
+- ❌ `usecase/` importing `infra/` - breaks testability, couples to implementation
+- ❌ `domain/` importing `usecase/` or `infra/` - breaks reusability
+- ❌ `infra/` importing another `infra/` directly - should go through domain interface
+
+---
+
+## Design Decisions
+
+### Why Transactional Outbox?
+
+- **Problem:** Ensuring notification delivery if service crashes after storing data
+- **Solution:** Write outbox event atomically with application data
+- **Benefit:** Decouples notification reliability from API response time
+
+### Why Separate Outbox Poller?
+
+- **Problem:** Multiple worker replicas would race to fetch same events
+- **Solution:** Single dedicated poller service
+- **Benefit:** Eliminates concurrency complexity, clearer semantics
+
+### Why Row-Level Locking (SELECT FOR UPDATE)?
+
+- **Problem:** Single poller still needs safety (transaction boundaries, exactly-once per event)
+- **Solution:** Fetch events within transaction with exclusive locks
+- **Benefit:** Prevents multiple transactions from seeing same events
+
+### Why Eventual Consistency on Notifications?
+
+- **Problem:** Notification service may be slow/unreliable
+- **Solution:** Decouple from API response path (separate poller)
+- **Benefit:** API responds fast, notifications retry indefinitely
+
+### Why Dedup Only on Worker?
+
+- **Problem:** Idempotency table adds DB overhead, API complexity
+- **Solution:** Use unique constraint on (source, source_ref_id)
+- **Benefit:** Simpler API, cheaper storage, same guarantee
+
+### Why Scheduler as Separate Service?
+
+- **Problem:** CronJob in worker adds complexity, mixing concerns
+- **Solution:** Dedicated scheduler (CronJob in Kubernetes)
+- **Benefit:** Maintenance jobs independent of worker scaling, cleaner separation
+
+### Why Strict Layer Boundaries (Clean Architecture)?
+
+- **Problem:** Without boundaries, code couples to frameworks (Postgres, Chi, Logrus). Testing becomes hard, swapping implementations is painful.
+- **Solution:** Enforce inward dependency flow. Domain has zero dependencies. Usecase depends only on domain interfaces. Infra implements domain interfaces.
+- **Benefit:**
+  - Domain logic testable without mocks (pure functions)
+  - Usecase testable with minimal mocks (fake domain interfaces)
+  - Infra testable via integration tests
+  - Can swap Postgres → MySQL, Chi → Gin, Logrus → Zap with 0 domain/usecase changes
+  - New developers can find features by layer (data access = `domain/repo/`, business rules = `usecase/`, persistence = `infra/postgres/`)
+
+### Why Four Independent Services Instead of Monolith?
+
+- **API (1-5 replicas):** Stateless, scales instantly on traffic spikes
+- **Worker (1-10 replicas):** CPU-bound message processing, independent scaling from API
+- **Outbox Poller (1 replica):** Cannot scale (single instance prevents duplicate notifications). Single responsibility = easy to reason about
+- **Scheduler (CronJob):** No need for continuous running. Kubernetes runs on schedule, scales to 0 otherwise
+
+**Benefit:** Each service has its own scaling profile. API doesn't waste resources during off-peak. Worker throughput independent of webhook arrival rate.
+
+### Why Idempotency on Worker, Not API?
+
+- **Alternative considered:** Store idempotency_keys at API layer, check before publishing
+- **Rejected because:** Extra DB write per request (even on retry), idempotency table becomes hot partition, adds complexity to API DI
+- **Chosen:** Unique constraint on `(source, source_ref_id)`, dedup check on worker
+- **Trade-off:** API may publish duplicate messages, but worker guarantees at-most-once storage
+- **Benefit:** Simpler API, cheaper storage, same guarantee
+
+### Why Database Transaction for Outbox Fetch (SELECT FOR UPDATE)?
+
+- **Problem:** Without locking, two poller instances could fetch same event in different transactions
+- **Solution:** Fetch events with exclusive row locks within transaction
+- **Benefit:** Ensures exactly-once fetch, prevents race conditions even if poller restarts mid-notification
+
+### Why Separate Notification from Storage (Eventual Consistency)?
+
+- **Problem:** If notification service is slow, API response times degrade
+- **Solution:** Store atomically in transaction, notify asynchronously via separate poller
+- **Benefit:** API responds in ~10ms. Notifications retry for up to 30 days. Users see data instantly, notifications eventually reach.
+
+### Why Domain Interfaces?
+
+- **Example:** `domain/service/Publisher` interface (not concrete `pubsub.Client`)
+- **Usecase imports:** `service.Publisher` (interface)
+- **DI wires:** `pubsub.Client` (concrete) into `service.Publisher` (interface)
+- **Benefit:** Usecase doesn't know about Pub/Sub. Can mock for tests. Can replace with Kafka without touching usecase code.
+
+---
+
+## Architectural Metrics
+
+### Coupling & Cohesion
+
+- **Afferent coupling (Ca):** Domain has 0 (nothing depends inward on domain code)
+- **Efferent coupling (Ce):** Domain has 0 (no outbound dependencies)
+- **Cyclomatic complexity:** Low per file (~5-15). Complex logic split into focused functions.
+- **Lines per function:** 15-40 (respects single responsibility)
+
+### Testability
+
+| Layer   | Test Type   | Mocks Needed | Coverage Target |
+| ------- | ----------- | ------------ | --------------- |
+| Domain  | Unit        | 0            | 95%+            |
+| Usecase | Unit + Inte | 3-5 mocks    | 85%+            |
+| Infra   | Integration | Real DB/API  | 70%+            |
+
+### Scalability Boundaries
+
+- **API:** Scales on demand. Horizontal scaling via Kubernetes HPA.
+- **Worker:** Scales on demand. Pub/Sub pull distributes messages across replicas.
+- **Poller:** Fixed 1 replica. Polling interval (5s) + batch (10) tuned for typical workload.
+- **Scheduler:** CronJob. Runs once daily, takes <1s.
+
+### Failure Isolation
+
+- API down → Webhooks lost (upstream responsibility to retry)
+- Worker down → Messages stay in Pub/Sub, retried indefinitely
+- Poller down → Notifications delayed, retried when poller recovers
+- Scheduler down → Retention policy skipped for 1 day, next run cleans up

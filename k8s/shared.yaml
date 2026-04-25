@@ -2,14 +2,14 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: candidate-ingestion
-  namespace: default
+  namespace: candidate-ingestion-service
 
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: candidate-ingestion
-  namespace: default
+  namespace: candidate-ingestion-service
 data:
   gcp-project: "test-project"
   pubsub-topic: "candidate-applications"
@@ -20,7 +20,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: candidate-ingestion
-  namespace: default
+  namespace: candidate-ingestion-service
 type: Opaque
 stringData:
   database-url: "postgres://user:password@postgres:5432/candidates?sslmode=disable"

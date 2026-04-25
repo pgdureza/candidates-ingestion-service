@@ -19,6 +19,17 @@ services:
       timeout: 5s
       retries: 5
 
+  pubsub-ui:
+    image: echocode/gcp-pubsub-emulator-ui:latest
+    ports:
+      - "8680:8680"
+    environment:
+      # Use the service name "pubsub-emulator" as the hostname
+      - PUBSUB_EMULATOR_HOST=pubsub-emulator:8085
+      - GCP_PROJECT_IDS=test-project
+    depends_on:
+      - pubsub-emulator
+
   pubsub-emulator:
     image: google/cloud-sdk:emulators
     container_name: candidates-pubsub
@@ -42,6 +53,9 @@ services:
     ports:
       - "8080:8080"
     env_file: .env
+    environment:
+      DATABASE_URL: postgres://user:password@postgres:5432/candidates?sslmode=disable
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
     command: ./api
     depends_on:
       postgres:
@@ -56,7 +70,42 @@ services:
       target: runtime
     container_name: candidates-worker
     env_file: .env
+    environment:
+      DATABASE_URL: postgres://user:password@postgres:5432/candidates?sslmode=disable
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
     command: ./worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pubsub-emulator:
+        condition: service_healthy
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: candidates-scheduler
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://user:password@postgres:5432/candidates?sslmode=disable
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+    command: ./scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  poller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: candidates-poller
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://user:password@postgres:5432/candidates?sslmode=disable
+      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
+    command: ./poller
     depends_on:
       postgres:
         condition: service_healthy

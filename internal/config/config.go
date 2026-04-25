@@ -7,13 +7,17 @@ import (
 )
 
 type Config struct {
-	APIPort       string
-	DatabaseURL   string
-	GCPProject    string
-	PubSubTopic   string
-	WorkerCount   int
-	WorkerTimeout time.Duration
-	LogLevel      string
+	APIPort               string
+	DatabaseURL           string
+	GCPProject            string
+	PubSubTopic           string
+	WorkerCount           int
+	WorkerTimeout         time.Duration
+	LogLevel              string
+	OutboxRetentionDays   int
+	OutboxCleanupSchedule string
+	OutboxBatchSize       int
+	PollIntervalMs        int
 }
 
 func Load() *Config {
@@ -24,13 +28,17 @@ func Load() *Config {
 	}
 
 	return &Config{
-		APIPort:       getEnv("API_PORT", "8080"),
-		DatabaseURL:   getEnv("DATABASE_URL", "postgres://user:password@localhost:5432/candidates?sslmode=disable"),
-		GCPProject:    getEnv("GCP_PROJECT", "test-project"),
-		PubSubTopic:   getEnv("PUBSUB_TOPIC", "candidate-applications"),
-		WorkerCount:   getEnvInt("WORKER_COUNT", 10),
-		WorkerTimeout: getEnvDuration("WORKER_TIMEOUT", 30*time.Second),
-		LogLevel:      getEnv("LOG_LEVEL", "info"),
+		APIPort:               getEnv("API_PORT", "8080"),
+		DatabaseURL:           getEnv("DATABASE_URL", "postgres://user:password@localhost:5432/candidates?sslmode=disable"),
+		GCPProject:            getEnv("GCP_PROJECT", "test-project"),
+		PubSubTopic:           getEnv("PUBSUB_TOPIC", "candidate-applications"),
+		WorkerCount:           getEnvInt("WORKER_COUNT", 10),
+		WorkerTimeout:         getEnvDuration("WORKER_TIMEOUT", 30*time.Second),
+		LogLevel:              getEnv("LOG_LEVEL", "info"),
+		PollIntervalMs:        getEnvInt("POLL_INTERVAL_MS", 1),
+		OutboxRetentionDays:   getEnvInt("OUTBOX_RETENTION_DAYS", 0),
+		OutboxCleanupSchedule: getEnv("OUTBOX_CLEANUP_SCHEDULE", "@every 15s"),
+		OutboxBatchSize:       getEnvInt("OUTBOX_BATCH_SIZE", 50),
 	}
 }
 

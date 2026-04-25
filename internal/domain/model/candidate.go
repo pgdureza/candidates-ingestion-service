@@ -4,8 +4,8 @@ import (
 	"time"
 )
 
-// CandidateApplication normalized candidate application
-type CandidateApplication struct {
+// Candidate normalized candidate application
+type Candidate struct {
 	ID          string     `json:"id"`
 	FirstName   string     `json:"first_name"`
 	LastName    string     `json:"last_name"`

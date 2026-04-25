@@ -13,7 +13,9 @@ COPY . .
 
 # Build
 RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o api ./cmd/api && \
-    CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o worker ./cmd/worker
+    CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o worker ./cmd/worker && \
+    CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o scheduler ./cmd/scheduler && \
+    CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o poller ./cmd/poller
 
 # Runtime stage
 FROM alpine:latest as runtime
@@ -24,6 +26,8 @@ WORKDIR /root/
 
 COPY --from=builder /app/api .
 COPY --from=builder /app/worker .
+COPY --from=builder /app/scheduler .
+COPY --from=builder /app/poller .
 
 EXPOSE 8080
 

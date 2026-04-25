@@ -5,62 +5,31 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/sirupsen/logrus"
 
 	"github.com/candidate-ingestion/service/internal/config"
-	"github.com/candidate-ingestion/service/internal/infra/db"
+	"github.com/candidate-ingestion/service/internal/domain/service"
 	apphttp "github.com/candidate-ingestion/service/internal/infra/http"
 	"github.com/candidate-ingestion/service/internal/infra/logger"
+	"github.com/candidate-ingestion/service/internal/infra/postgres"
 	"github.com/candidate-ingestion/service/internal/infra/pubsub"
-	"github.com/candidate-ingestion/service/internal/usecase/applicationingester"
+	candidateingestion "github.com/candidate-ingestion/service/internal/usecase/candidate/ingestion"
 	"github.com/candidate-ingestion/service/internal/usecase/circuitbreaker"
 )
 
-type APIContainer struct {
-	Api      *Api
-	Database *db.DB
+type API struct {
+	Database *postgres.DB
 	PubSub   *pubsub.Client
+	Router   *chi.Mux
+
+	// internal
+	topic    string
+	ingester *candidateingestion.Ingester
+	log      service.Logger
 }
 
-type Api struct {
-	db        *db.DB
-	ps        *pubsub.Client
-	topic     string
-	router    *chi.Mux
-	whService *applicationingester.Ingester
-	log       *logrus.Logger
-}
-
-func New(database *db.DB, pubsubClient *pubsub.Client, topic string, log *logrus.Logger) *Api {
-	app := &Api{
-		db:     database,
-		ps:     pubsubClient,
-		topic:  topic,
-		router: chi.NewRouter(),
-		log:    log,
-	}
-
-	// DIs
-	cb := circuitbreaker.NewCircuitBreaker(5, 60*time.Second, 30*time.Second)
-	app.whService = applicationingester.NewCandidateApplicationIngester(database, pubsubClient, topic, cb)
-	app.setupRoutes()
-
-	return app
-}
-
-func (a *Api) setupRoutes() {
-	whHandler := apphttp.NewWebhookHandler(a.whService, a.log)
-
-	a.router.Get("/health", whHandler.HandleHealth)
-	a.router.Post("/webhooks/{source}", whHandler.HandleWebhook)
-}
-
-func (a *Api) Router() *chi.Mux {
-	return a.router
-}
-
-func NewAPI(ctx context.Context, cfg *config.Config) (*APIContainer, error) {
-	database, err := db.New(cfg.DatabaseURL)
+func NewAPI(ctx context.Context, cfg *config.Config) (*API, error) {
+	logger := logger.New(cfg.LogLevel)
+	database, err := postgres.New(cfg.DatabaseURL, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -71,12 +40,23 @@ func NewAPI(ctx context.Context, cfg *config.Config) (*APIContainer, error) {
 		return nil, err
 	}
 
-	log := logger.New(cfg.LogLevel)
-	application := New(database, ps, cfg.PubSubTopic, log)
+	topic := cfg.PubSubTopic
 
-	return &APIContainer{
-		Api:      application,
+	cb := circuitbreaker.NewCircuitBreaker(5, 60*time.Second, 30*time.Second)
+	ingester := candidateingestion.NewCandidateApplicationIngester(database, ps, topic, cb, logger)
+
+	// routes
+	router := chi.NewRouter()
+	webhhookHandler := apphttp.NewWebhookHandler(ingester, logger)
+	router.Get("/health", webhhookHandler.HandleHealth)
+	router.Post("/webhooks/{source}", webhhookHandler.HandleWebhook)
+
+	return &API{
 		Database: database,
 		PubSub:   ps,
+		Router:   router,
+		topic:    topic,
+		ingester: ingester,
+		log:      logger,
 	}, nil
 }
