@@ -6,6 +6,8 @@ CREATE TABLE metrics (
 
 -- Initialize counters
 INSERT INTO metrics (metric_name, value) VALUES
+  ('webhooks_total_request', 0),
+  ('webhooks_rate_limited', 0),
   ('webhooks_ingested', 0),
   ('webhooks_rejected', 0),
   ('outbox_written', 0),

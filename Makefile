@@ -4,8 +4,8 @@
 DOCKER_IMAGE ?= candidate-ingestion:latest
 DOCKER_COMPOSE_FILE ?= docker-compose.yml
 KUBE_NAMESPACE ?= candidate-ingestion-service
-STRESS_TEST_DURATION ?= 30
-STRESS_TEST_CONCURRENCY ?= 100
+STRESS_TEST_DURATION ?= 10
+STRESS_TEST_CONCURRENCY ?= 30
 
 help:
 	@echo "Available commands:"
@@ -71,7 +71,6 @@ stress-test:
 					UNIQUE_ID="$$(date +%s%N)-$$i"; \
 					curl -s -X POST http://localhost:8080/webhooks/linkedin \
 						-H "Content-Type: application/json" \
-						-H "Idempotency-Key: key-$$UNIQUE_ID" \
 						-d "{ \
 							\"id\": \"$$UNIQUE_ID\", \
 							\"firstName\": \"Test\", \

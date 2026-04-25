@@ -10,6 +10,16 @@ import (
 func (c *Collector) Collect(ctx context.Context) (*service.MetricsResponse, error) {
 	m := c.db.Metrics()
 
+	totalRequest, err := m.GetMetric(ctx, "webhooks_total_request")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get webhooks_total_request: %w", err)
+	}
+
+	rateLimited, err := m.GetMetric(ctx, "webhooks_rate_limited")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get webhooks_rate_limited: %w", err)
+	}
+
 	ingested, err := m.GetMetric(ctx, "webhooks_ingested")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get webhooks_ingested: %w", err)
@@ -18,6 +28,11 @@ func (c *Collector) Collect(ctx context.Context) (*service.MetricsResponse, erro
 	rejected, err := m.GetMetric(ctx, "webhooks_rejected")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get webhooks_rejected: %w", err)
+	}
+
+	duplicate, err := m.GetMetric(ctx, "webhooks_duplicate")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get webhooks_duplicate: %w", err)
 	}
 
 	outboxWritten, err := m.GetMetric(ctx, "outbox_written")
@@ -51,8 +66,11 @@ func (c *Collector) Collect(ctx context.Context) (*service.MetricsResponse, erro
 	}
 
 	return &service.MetricsResponse{
+		WebhooksTotalRequest:  int(totalRequest),
+		WebhooksRateLimited:   int(rateLimited),
 		WebhooksIngested:      int(ingested),
 		WebhooksRejected:      int(rejected),
+		WebhooksDuplicate:     int(duplicate),
 		OutboxWritten:         int(outboxWritten),
 		OutboxProcessAttempts: int(outboxProcessAttempts),
 		OutboxPublishFailed:   int(outboxPublishedFailed),

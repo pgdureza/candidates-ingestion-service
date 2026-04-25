@@ -56,8 +56,8 @@ func Load() *Config {
 		},
 		CircuitBreaker: CircuitBreakerConfig{
 			FailureThreshold: getEnvInt("CIRCUITBREAKER_FAILURE_THREASHOLD", 5),
-			OpenTimeoutS:     getEnvInt("CIRCUITBREAKER_TIMEOUT_S", 2000),
-			HalfOpenTimeoutS: getEnvInt("CIRCUITBREAKER_HALF_OPEN_TIMEOUT_S", 1000),
+			OpenTimeoutS:     getEnvInt("CIRCUITBREAKER_TIMEOUT_S", 2),
+			HalfOpenTimeoutS: getEnvInt("CIRCUITBREAKER_HALF_OPEN_TIMEOUT_S", 1),
 		},
 	}
 }

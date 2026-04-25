@@ -36,16 +36,6 @@ func (p *CandidateProcesor) Handle(ctx context.Context, data []byte) error {
 		UpdatedAt:   parseTime(appData["updated_at"]),
 	}
 
-	// Dedup: check if already processed (by source + source_ref_id)
-	exists, existingAppID, err := p.db.Candidates().Exists(ctx, candidate.Source, candidate.SourceRefID)
-	if err != nil {
-		return fmt.Errorf("dedup check failed: %w", err)
-	}
-	if exists {
-		p.logger.WithField("app_id", existingAppID).Info("duplicate detected, skipping")
-		return nil
-	}
-
 	jsonData, err := json.Marshal(candidate)
 	if err != nil {
 		return fmt.Errorf("could not convert candidate %s into json data: %w", candidate.ID, err)
@@ -61,7 +51,19 @@ func (p *CandidateProcesor) Handle(ctx context.Context, data []byte) error {
 	}
 
 	// Atomically store application + outbox event in transaction
+	// Dedup check happens inside transaction to prevent race conditions
 	if err := p.db.WithTransaction(ctx, func(txCtx context.Context) error {
+		// Check if already exists (within transaction, prevents race)
+		exists, existingAppID, err := p.db.Candidates().Exists(txCtx, candidate.Source, candidate.SourceRefID)
+		if err != nil {
+			return fmt.Errorf("dedup check failed: %w", err)
+		}
+		if exists {
+			p.logger.WithField("app_id", existingAppID).Info("duplicate detected, skipping")
+			p.db.Metrics().IncrementMetric(txCtx, "webhooks_duplicate", 1)
+			return nil
+		}
+
 		if err := p.db.Candidates().Create(txCtx, candidate); err != nil {
 			return err
 		}
