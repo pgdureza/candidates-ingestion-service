@@ -13,6 +13,8 @@ func (c *Cleaner) Execute(ctx context.Context) error {
 		return err
 	}
 
+	c.db.Metrics().IncrementMetric(ctx, "outbox_cleaned", rowsDeleted)
+
 	c.logger.WithField("rows_deleted", rowsDeleted).Info("outbox cleanup completed")
 	return nil
 }

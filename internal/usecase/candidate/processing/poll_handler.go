@@ -26,6 +26,7 @@ func (cp *CandidateProcesor) Execute(ctx context.Context) {
 	}
 
 	cp.logger.WithField("count", len(events)).Debug("Fetched unpublished events")
+	cp.db.Metrics().IncrementMetric(ctx, "outbox_process_attempts", int64(len(events)))
 
 	// Process each event
 	for _, event := range events {
@@ -42,13 +43,17 @@ func (cp *CandidateProcesor) Execute(ctx context.Context) {
 		// Notify external systems (unreliable, may fail)
 		if err := cp.notifier.Notify(ctx, &candidate); err != nil {
 			l.WithError(err).Warn("Failed to notify, will retry later")
+			cp.db.Metrics().IncrementMetric(ctx, "notification_failed", 1)
 			continue
 		}
 
 		// Mark published only after successful notification
 		if err := outboxRepo.MarkPublished(ctx, event.ID); err != nil {
 			l.WithError(err).Warn("Failed to mark event as published")
-			// Non-fatal, will retry next cycle
+			cp.db.Metrics().IncrementMetric(ctx, "outbox_publish_failed", 1)
+			continue
+		} else {
+			cp.db.Metrics().IncrementMetric(ctx, "outbox_publish_success", 1)
 		}
 
 		l.Info("Notification Success")

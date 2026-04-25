@@ -10,6 +10,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.8.4
+	golang.org/x/time v0.5.0
 )
 
 require (
@@ -39,7 +40,6 @@ require (
 	golang.org/x/sync v0.6.0 // indirect
 	golang.org/x/sys v0.16.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
-	golang.org/x/time v0.5.0 // indirect
 	google.golang.org/api v0.160.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
 	google.golang.org/genproto v0.0.0-20240116215550-a9fa1716bcac // indirect

@@ -33,7 +33,7 @@ func NewWorker(ctx context.Context, cfg *config.Config) (*Worker, error) {
 	}
 
 	notifier := unrealiable.NewUnreliableNotifier()
-	candidateProcessor := processing.NewCandidateProcesor(database, logger, notifier, cfg.OutboxBatchSize)
+	candidateProcessor := processing.NewCandidateProcesor(database, logger, notifier, cfg.Outbox.BatchSize)
 	pubSubPool := pubsub.NewPubSubPool(candidateProcessor, cfg.WorkerCount, cfg.WorkerTimeout, ps, logger)
 
 	return &Worker{

@@ -21,6 +21,7 @@ func (s *Ingester) Ingest(
 	candidate, err := parser.Parse(payload)
 	if err != nil {
 		s.logger.WithError(err).Warn("webhook parsing failed")
+		s.db.Metrics().IncrementMetric(ctx, "webhooks_rejected", 1)
 		return "", err
 	}
 	s.logger.Debug("webhook parsed successfully")
@@ -43,9 +44,11 @@ func (s *Ingester) Ingest(
 		// Log but don't fail the request
 		// Worker will retry from DB later
 		s.logger.WithError(err).Warn("pubsub publish failed (circuit breaker or timeout), worker will retry")
+		s.db.Metrics().IncrementMetric(ctx, "webhooks_rejected", 1)
 		return candidate.ID, nil
 	}
 
 	s.logger.WithField("app_id", candidate.ID).Info("webhook published to pubsub")
+	s.db.Metrics().IncrementMetric(ctx, "webhooks_ingested", 1)
 	return candidate.ID, nil
 }

@@ -75,6 +75,8 @@ func (p *CandidateProcesor) Handle(ctx context.Context, data []byte) error {
 		return fmt.Errorf("failed to store application: %w", err)
 	}
 
+	p.db.Metrics().IncrementMetric(ctx, "outbox_written", 1)
+
 	p.logger.WithFields(logrus.Fields{
 		"candidate_id": candidate.ID,
 		"source":       candidate.Source,

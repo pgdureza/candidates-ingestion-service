@@ -43,7 +43,10 @@ func NewAPI(ctx context.Context, cfg *config.Config) (*API, error) {
 
 	topic := cfg.PubSubTopic
 
-	cb := circuitbreaker.NewCircuitBreaker(5, 60*time.Second, 30*time.Second)
+	cb := circuitbreaker.NewCircuitBreaker(cfg.CircuitBreaker.FailureThreshold,
+		time.Duration(cfg.CircuitBreaker.OpenTimeoutS)*time.Second,
+		time.Duration(cfg.CircuitBreaker.HalfOpenTimeoutS)*time.Second,
+	)
 	ingester := candidateingestion.NewCandidateApplicationIngester(database, ps, topic, cb, logger)
 
 	collector := metrics.NewMetricsCollector(database)
@@ -52,9 +55,16 @@ func NewAPI(ctx context.Context, cfg *config.Config) (*API, error) {
 	router := chi.NewRouter()
 	webhhookHandler := apphttp.NewWebhookHandler(ingester, logger)
 	metricsHandler := apphttp.NewMetricsHandler(collector)
+	rateLimiter := apphttp.NewRateLimiter(cfg.WebhookRateLimit)
+
 	router.Get("/health", webhhookHandler.HandleHealth)
 	router.Get("/metrics", metricsHandler.HandleMetrics)
-	router.Post("/webhooks/{source}", webhhookHandler.HandleWebhook)
+
+	// Apply rate limit middleware only to webhook endpoint
+	router.Route("/webhooks", func(r chi.Router) {
+		r.Use(rateLimiter.Middleware)
+		r.Post("/{source}", webhhookHandler.HandleWebhook)
+	})
 
 	return &API{
 		Database: database,

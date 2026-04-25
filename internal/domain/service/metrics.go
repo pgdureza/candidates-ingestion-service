@@ -3,9 +3,14 @@ package service
 import "context"
 
 type MetricsResponse struct {
-	WebhooksReceived  int `json:"0_webhooks_received"`
-	UnpublishedEvents int `json:"1_unpublished_events"`
-	PublishedEvents   int `json:"2_published_events"`
+	WebhooksIngested      int `json:"webhooks_ingested"`
+	WebhooksRejected      int `json:"webhooks_rejected"`
+	OutboxWritten         int `json:"outbox_written"`
+	OutboxProcessAttempts int `json:"outbox_process_attempts"`
+	OutboxPublishSuccess  int `json:"outbox_publish_success"`
+	OutboxPublishFailed   int `json:"outbox_publish_failed"`
+	NotificationFailed    int `json:"notification_failed"`
+	OutboxCleaned         int `json:"outbox_cleaned"`
 }
 
 type MetricsCollector interface {

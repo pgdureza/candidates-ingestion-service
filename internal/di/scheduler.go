@@ -24,7 +24,7 @@ func NewScheduler(ctx context.Context, cfg *config.Config) (*Scheduler, error) {
 	if err != nil {
 		logger.Fatalf("Failed to connect to database: %v", err)
 	}
-	cleaner := cleanup.NewCleaner(database, cfg.OutboxRetentionDays, logger)
+	cleaner := cleanup.NewCleaner(database, cfg.Outbox.RetentionDays, logger)
 	jobs := cron.New()
 
 	return &Scheduler{

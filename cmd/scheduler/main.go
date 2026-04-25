@@ -26,7 +26,7 @@ func main() {
 	defer scheduler.Database.Close()
 
 	// Register cleanup job
-	entryID, err := scheduler.Jobs.AddFunc(cfg.OutboxCleanupSchedule, func() {
+	entryID, err := scheduler.Jobs.AddFunc(cfg.Outbox.CleanupSchedule, func() {
 		logger.Info("Cleanup job started")
 		if err := scheduler.Cleaner.Execute(ctx); err != nil {
 			logger.WithError(err).Error("Cleanup job failed")

@@ -26,7 +26,7 @@ func NewPoller(ctx context.Context, cfg *config.Config) (*OutboxPoller, error) {
 	}
 
 	notifier := unrealiable.NewUnreliableNotifier()
-	candidateProcessor := processing.NewCandidateProcesor(database, logger, notifier, cfg.OutboxBatchSize)
+	candidateProcessor := processing.NewCandidateProcesor(database, logger, notifier, cfg.Outbox.BatchSize)
 	poller := poller.NewPoller(candidateProcessor, logger, cfg.PollIntervalMs)
 
 	return &OutboxPoller{

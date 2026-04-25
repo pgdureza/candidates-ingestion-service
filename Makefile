@@ -4,8 +4,8 @@
 DOCKER_IMAGE ?= candidate-ingestion:latest
 DOCKER_COMPOSE_FILE ?= docker-compose.yml
 KUBE_NAMESPACE ?= candidate-ingestion-service
-STRESS_TEST_DURATION ?= 10
-STRESS_TEST_CONCURRENCY ?= 10
+STRESS_TEST_DURATION ?= 30
+STRESS_TEST_CONCURRENCY ?= 100
 
 help:
 	@echo "Available commands:"
@@ -16,8 +16,8 @@ help:
 	@echo "  make worker             Run worker locally (go run ./cmd/worker)"
 	@echo "  make scheduler          Run scheduler locally (go run ./cmd/scheduler)"
 	@echo "  make poller             Run outbox poller locally (go run ./cmd/poller)"
-	@echo "  make metrics            Poll API /metrics endpoint (updates every 200ms)"
-	@echo "  make test               Run unit tests"
+	@echo "  make metrics            Poll API /metrics endpoint (updates every 1s)"
+	@echo "  make test               Run unit tests"\
 	@echo "  make lint               Run linter"
 	@echo "  make stress-test        Simulate traffic spike"
 	@echo "  make trigger-failure    Simulate downstream failure"
@@ -141,12 +141,12 @@ metrics:
 	@bash -c '\
 		while true; do \
 			clear; \
-			echo "=== Candidate Ingestion Metrics (refreshing every 200ms, Ctrl+C to exit) ==="; \
+			echo "=== Candidate Ingestion Metrics (refreshing every 1s, Ctrl+C to exit) ==="; \
 			echo ""; \
 			curl -s http://localhost:8080/metrics | jq . 2>/dev/null || echo "Error: Unable to connect to API on localhost:8080"; \
 			echo ""; \
 			echo "Last updated: $$(date +"%H:%M:%S")"; \
-			sleep 0.2; \
+			sleep 1; \
 		done \
 	'
 
