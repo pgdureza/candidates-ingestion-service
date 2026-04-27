@@ -14,7 +14,7 @@ Event-driven microservice for ingesting candidate applications from multiple sou
 ┌──────────────────────────────────────────────────────────────┐
 │                      API Service (1-5)                       │
 │  POST /webhooks/{source}                                     │
-│  • Validates payload + injects idempotency key               │
+│  • Validates payload
 │  • Publishes to Pub/Sub (circuit breaker + timeout)          │
 │  • Returns 202 Accepted (non-blocking)                       │
 └────────────────┬─────────────────────────────────────────────┘
@@ -40,8 +40,6 @@ Event-driven microservice for ingesting candidate applications from multiple sou
     ├─────────────────────┤
     │ candidate_applications
     │ outbox_events       │ (unpublished)
-    │ candidate_skills    │
-    │ candidate_notes     │
     └─────────────────────┘
              ▲
              │ fetch
